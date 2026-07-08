@@ -1,4 +1,4 @@
-# ClassNoter
+# ClassNoter v0.01
 
 一个基于 ASR + LLM 的课堂笔记助手，将实时转为结构化笔记。
 
