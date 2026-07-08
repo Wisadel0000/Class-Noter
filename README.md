@@ -1,10 +1,10 @@
 # ClassNoter
 
-一个基于 ASR + LLM 的课堂笔记助手，实时将语音转为结构化笔记。
+一个基于 ASR + LLM 的课堂笔记助手，将实时转为结构化笔记。
 
 ## 功能
 
-- **实时语音转写** — 基于 FunASR + Paraformer 模型，支持本地离线运行
+- **实时语音转写** — 基于 FunASR + Paraformer-zh 模型，语音模块在本地运行
 - **智能笔记整理** — 通过 LLM Agent（LangChain/LangGraph）将语音内容整理为结构化笔记
 - **对话式交互** — 前台 Agent 支持多轮对话，可随时调整笔记内容
 - **Flet 图形界面** — 简洁的桌面应用界面
@@ -20,10 +20,10 @@ uv sync
 2. 在 `.env` 中配置 LLM：
 
 ```env
-LLM_BASE_URL=https://api.openai.com/v1
+LLM_BASE_URL=your_base_url
 LLM_API_KEY=your_api_key
-LLM_MODEL=gpt-4o
-NOTE_ROOT_PATH=./note_dir
+LLM_MODEL=your_modle
+NOTE_ROOT_PATH=./note_dir #(默认笔记保存目录)
 ```
 
 3. 运行：
@@ -32,7 +32,7 @@ NOTE_ROOT_PATH=./note_dir
 python main.py
 ```
 
-> ASR 模型（Paraformer / CT-Punc）首次运行时会自动下载到 `asr_models/` 目录。
+> ASR 模型（Paraformer-zh / CT-Punc）首次运行时会自动下载到 `asr_models/` 目录。
 
 ## 技术栈
 
