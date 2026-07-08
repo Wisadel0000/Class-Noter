@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 虚拟环境
+.venv/
+
+# 环境变量（密钥等敏感信息）
+.env
+
+# ASR 模型文件（大体积二进制）
+asr_models/paraformer-zh/
+asr_models/ct-punc/
+
+# 日志
+agent.log
+*.log
+
+# 生成的笔记数据
+# note_dir/
+
+# 测试记录和输出
+Test_record/
+
+# 临时目录
+______/
+
+# IDE - PyCharm
+.idea/
+
+# macOS
+.DS_Store
+
+# 操作系统缩略图
+Thumbs.db
