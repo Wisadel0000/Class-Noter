@@ -1,8 +1,7 @@
 """Flet 客户端 — FrontAgent 对话窗口"""
-import config
 import flet as ft
-import eventbus as bus
-from model_front_agent import FrontAgent
+from _legacy import config, eventbus as bus
+from AgentCore.front import FrontAgent
 
 
 
@@ -51,15 +50,15 @@ def main(page: ft.Page):
 
         add_bubble(text, is_user=True)
 
-        reply = _agent.sent_message(text)
+        reply = _agent.response_message(text)
         add_bubble(reply, is_user=False)
 
     input_field.on_submit = send_message
 
     #config_page
-    model_name_field= ft.TextField(label="MODEL_NAME", value=config.get_value("LLM_MODEL"),)
+    model_name_field= ft.TextField(label="MODEL_NAME", value=config.get_value("LLM_MODEL"), )
     api_key_field= ft.TextField(label="API_KEY", value= config.get_value("LLM_API_KEY"),
-                                 password=True, can_reveal_password=True,)
+                                password=True, can_reveal_password=True, )
     base_url_field= ft.TextField(label="BaseURL", value=config.get_value("LLM_BASE_URL"), )
     note_path_filed = ft.TextField(label = "note_path", value=config.get_value("NOTE_ROOT_PATH"))
 

@@ -1,8 +1,7 @@
 """Flet 客户端 — FrontAgent 对话窗口"""
-import config
 import flet as ft
-import eventbus as bus
-from model_front_agent import FrontAgent
+from _legacy import config, eventbus as bus
+from AgentCore.front import FrontAgent
 
 
 _agent = FrontAgent()
@@ -75,7 +74,7 @@ def main(page: ft.Page):
             text = input_text.strip()
             if not text:
                 return
-            reply = _agent.sent_message(text)
+            reply = _agent.response_message(text)
             new_msgs = [
                 *messages,
                 {"text": text, "is_user": True},

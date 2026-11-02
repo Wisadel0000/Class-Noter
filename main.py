@@ -1,35 +1,124 @@
-# 1.加载配置
-import config   #TODO:升级为 环境值热更新
-import eventbus as bus
-import asr
-import model_background_agent
-from Gui import app_start
+from di_container import DIContainer
+
+from pathlib import Path
 import threading
+from loguru import logger
+
+from event.event_core import Bus,Loop,Router
+from event.events import AppStart
+from setting import SettingStore
+from router.provider import LLMRouter
+from core.tools.di import tools_manager_init
+from core.wiki.di import wiki_manager_init
+from core.background_agent.di import background_module_init
+from core.front_agent.di import front_module_init
+from core.reporter.di import reporter_module_init
+from Gui import GuiModule
+
+from dotenv import load_dotenv
+load_dotenv()
 
 
-def init():
 
-    #2.创建组件
-    #3.订阅事件
-    bus.BUS.on_async(bus.RunNoter, bus.run_noter)
-    bus.BUS.on(bus.ASRInit, asr.init_asr_model)
-    bus.BUS.on_async(bus.NoteStart, asr.run_asr)
-    bus.BUS.on(bus.NoteStart, model_background_agent.run_agent)
-    bus.BUS.on(bus.Run, app_start)
+class App:
+    def __init__(self, bus:Bus, loop:Loop, setting_store: SettingStore, gui: GuiModule, models_loops: list[Loop] , modules: list):
+        self._core_bus = bus
+        self._core_loop = loop
+        self._setting_store = setting_store
+        self._gui = gui
+        self._models_loops = models_loops
+        self._modules = modules
 
-    # bus.BUS.on(bus.ASRInit, asr.init_asr_model)
-    # bus.BUS.on_async(bus.NoteStart, asr.run_asr)
-    # bus.BUS.on(bus.NoteStart, model_background_agent.run_agent)
-    return
+    def _run_models_threading(self):
+        for loop in self._models_loops:
+            logger.debug(f"{loop}线程正在启动")
+            threading.Thread(target=loop.run, daemon=True).start()
 
-if __name__ == '__main__':
-    init()
-    bus.BUS.emit(bus.Run)
+    def start(self):
+        self._run_models_threading()
+        logger.info("各模块线程已启动")
+        self._core_loop.post(AppStart())
+        logger.info("启动事件已发送")
+        # self._core_loop.run()
+        # 气笑了flet只能run在主线程上，那岂不是只能委屈核心loop跑在守护线程上了？
+        threading.Thread(target=self._core_loop.run, daemon=True).start()
+        self._gui.gui_start()
 
-    # bus.BUS.emit(bus.ASRInit)
-    # bus.BUS.emit(bus.NoteStart)
-    # # 保持主线程存活，否则 daemon 线程会被立即杀死
-    # try:
-    #     threading.Event().wait()
-    # except KeyboardInterrupt:
-    #     print("\n程序已退出。")
+
+
+def main():
+    container = DIContainer()
+
+    # 基础模块
+    container.register("CoreBus", lambda c: Bus(),life_cycle="singleton")
+    container.register("CoreLoop", lambda c: Loop(c.resolve("CoreBus")),life_cycle="singleton")
+    container.register("CoreBusRouter", lambda c: Router(c.resolve("CoreBus")),life_cycle="singleton")
+    container.register("SettingStore",lambda c: SettingStore(path=Path("setting.json")),life_cycle="singleton")
+
+    # 设置层
+    # routers
+    container.register("LLMRouter", lambda c: LLMRouter( c.resolve("SettingStore")),life_cycle="singleton")
+
+    # ToolsManager
+    container.register("ToolsManager",tools_manager_init,life_cycle="singleton")
+
+    # WikiManager (这东西其实不算核心逻辑 ，只是提供工具，根本就没拼起来，所有我觉得应该算设置层
+    container.register("WikiManager",wiki_manager_init,life_cycle="singleton")
+
+    # FrontModule
+    container.register("Front_Bus", lambda c: Bus(),life_cycle="singleton")
+    container.register("Front_Loop", lambda c: Loop(c.resolve("Front_Bus")),life_cycle="singleton")
+    container.register("Front_Module",front_module_init,life_cycle="singleton")
+
+    # BackgroundModule
+    container.register("Background_Bus", lambda c: Bus(),life_cycle="singleton")
+    container.register("Background_Loop", lambda c: Loop(c.resolve("Background_Bus")),life_cycle="singleton")
+    container.register("Background_Module",background_module_init,life_cycle="singleton")
+
+    # Reporter
+    container.register("Reporter_Bus", lambda c: Bus(), life_cycle="singleton")
+    container.register("Reporter_Loop", lambda c: Loop(c.resolve("Reporter_Bus")), life_cycle="singleton")
+    container.register("Reporter_Module", reporter_module_init, life_cycle="singleton")
+
+    # Gui  （走个形式
+    container.register("Gui_Bus", lambda c: Bus(), life_cycle="singleton")
+    container.register("Gui_Loop", lambda c: Loop(c.resolve("Gui_Bus")), life_cycle="singleton")
+    container.register("Gui_Module", lambda c: GuiModule(
+        core_bus_router=c.resolve("CoreBusRouter"),
+        core_loop=c.resolve("CoreLoop"),
+        local_bus=c.resolve("Gui_Bus"),
+        local_loop=c.resolve("Gui_Loop"),
+    ), life_cycle="singleton")
+
+    # App根对象
+    container.register("app", lambda c: App(
+        bus=c.resolve("CoreBus"),
+        loop=c.resolve("CoreLoop"),
+        setting_store=c.resolve("SettingStore"),
+        gui=c.resolve("Gui_Module"),
+        models_loops=[
+                      c.resolve("Background_Loop"),
+                      c.resolve("Front_Loop"),
+                      c.resolve("Reporter_Loop"),
+                      c.resolve("Gui_Loop"),
+                      ],
+        modules=[c.resolve("Background_Module"),
+                 c.resolve("Front_Module"),
+                 c.resolve("Reporter_Module"),
+                 c.resolve("Gui_Module"),
+                 c.resolve("ToolsManager"),
+                 c.resolve("WikiManager"),
+                 c.resolve("LLMRouter"),
+                 ]
+    ))
+
+    logger.info("DI容器注册已完成")
+
+    app = container.resolve("app")
+
+    logger.info("应用启动")
+    app.start()
+
+
+if __name__ == "__main__":
+    main()
