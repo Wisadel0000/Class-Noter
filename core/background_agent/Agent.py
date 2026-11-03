@@ -11,6 +11,8 @@ from core.background_agent.BaseTask import AgentTask, MultiTask
 from core.background_agent.graphs_manager import GraphBlockManager, GraphTaskManager
 from core.tools.ToolsManager import ToolsManager
 from router.provider import LLMRouter
+from event.event_core import Bus, Loop
+from core.background_agent._event import AgentLog,TaskStartLog,TaskOverLog
 
 # 定义Agent的消息state    (以类型注解的形式)
 class MessageState(TypedDict):
@@ -22,11 +24,13 @@ class MessageState(TypedDict):
 
 class BackgroundAgent:
 
-    def __init__(self,provider_router: LLMRouter ,tools_manager: ToolsManager,graph_block_manager:GraphBlockManager, graph_task_manager:GraphTaskManager):
+    def __init__(self,local_bus:Bus ,local_loop:Loop,provider_router: LLMRouter ,tools_manager: ToolsManager,graph_block_manager:GraphBlockManager, graph_task_manager:GraphTaskManager):
         self._provider_router = provider_router
         self._tools_manager = tools_manager
         self._block_manager = graph_block_manager
         self._task_manager = graph_task_manager
+
+        self._local_loop = local_loop
 
         self._agent: CompiledStateGraph = self.compile()
         self._default_tools = "default" # 通常应该是什么呢，比如说是日志工具
@@ -38,11 +42,7 @@ class BackgroundAgent:
             raise TypeError(f"BackAgent模块收到了无法相应的任务类型：{task}")
         logger.info(f"新一轮后台Agent调用已开始，task_name:{task.task_name} id：{id(task)}")
         self._now_task = task
-        _messages = self._agent.invoke({"messages": [],
-                           "now_task": "",
-                           "agent_prompt": "",
-                           "work_message": "",
-                           "llm_calls": 0})
+        _messages = self._agent.invoke({"messages": [],"llm_calls": 0})
         self._now_task = None
         # return  _messages["messages"][-1].content # 只返回最后一句（？是不是应该直接没有返回值才对，任务管理器又不管代码执行到哪儿了
 
@@ -81,6 +81,7 @@ class BackgroundAgent:
         result = _model_with_tools.invoke(last_messages)
         logger.debug(f"agent工作输出:{result.content}")
         logger.debug(f"本轮工具调用:{result.tool_calls}")
+        self._local_loop.post(AgentLog(result.content,result.tool_calls))   #发布工作日志
 
         return {
             "messages": [result], # 调用模型并将返回的消息插入messages（由于messages是增量式更新，所以不用把旧上下文也拼进来）
@@ -107,8 +108,14 @@ class BackgroundAgent:
             result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"], ))
         return {"messages": result}
 
+    def _starter(self, state: dict):
+        """用于处理事件开始前的逻辑，比如整理状态信息和打印日志"""
+        self._local_loop.post(TaskStartLog(id(self._now_task),self._now_task.task_name))
+        return
+
     def _ender(self, state: dict):
         """用于处理事件结束后的逻辑，比如打印日志或者保存点什么的（"""
+        self._local_loop.post(TaskOverLog(id(self._now_task),self._now_task.task_name))
         logger.info(f"后台任务已完成，\ntask_name:{self._now_task.task_name} id:{id(self._now_task)}")
         return
 
@@ -132,6 +139,7 @@ class BackgroundAgent:
         # 状态图实例
         _blue_map = StateGraph(MessageState)
         # 节点加入
+        _blue_map.add_node("starter", self._starter)
         _blue_map.add_node("agent_node", self._agent_node)
         _blue_map.add_node("agent_tool", self._agent_tool)
         _blue_map.add_node("ender", self._ender)
@@ -140,17 +148,18 @@ class BackgroundAgent:
         for node in _ls_node:
             _blue_map.add_node(*node)
         # 边加入
-        _blue_map.add_conditional_edges(START, self._router_before_agent,
+        _blue_map.add_edge(START,"starter")
+        _blue_map.add_conditional_edges("starter", self._router_before_agent,   # starter -> agent/customize
                                         list(set(
                                             self._block_manager.map_to_in_nodes(
                                                 self._task_manager.all_router_before_agent() + ["agent_node", ])))
                                         )
-        _blue_map.add_conditional_edges("agent_node", self._router_after_agent,
+        _blue_map.add_conditional_edges("agent_node", self._router_after_agent, # agent -> tool/ender/customize
                                         list(set(
                                             self._block_manager.map_to_in_nodes(
                                                 self._task_manager.all_router_after_agent() + ["agent_tool", "ender"])))
                                         )
-        _blue_map.add_edge("agent_tool", "agent_node")
+        _blue_map.add_edge("agent_tool", "agent_node")  # tool->agent
         # 自定义子图内边
         _ls_edge = self._block_manager.all_edges()
         for edge in _ls_edge:

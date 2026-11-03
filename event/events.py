@@ -41,3 +41,16 @@ class RequestReporterData(Event):
 class ReporterResult(Event):
     request_id: str
     data: str
+
+@dataclass
+class TaskLogUpdate(Event): # 最新的后台Agent工作输出
+    now_task: str   #当前任务类型或空闲状态
+    content:str     #当前的工作输出
+
+@dataclass
+class AskForWorkStateReport(Event):
+    content:str # 要问的问题/单纯请求进度情况
+
+@dataclass
+class WorkStateReport(Event):
+    content: str

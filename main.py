@@ -1,3 +1,7 @@
+from dotenv import load_dotenv
+load_dotenv()
+# 加载环境（必须置于所有import之前）
+
 from di_container import DIContainer
 
 from pathlib import Path
@@ -14,10 +18,6 @@ from core.background_agent.di import background_module_init
 from core.front_agent.di import front_module_init
 from core.reporter.di import reporter_module_init
 from Gui import GuiModule
-
-from dotenv import load_dotenv
-load_dotenv()
-
 
 
 class App:
