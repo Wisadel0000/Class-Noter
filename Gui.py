@@ -1,9 +1,12 @@
 """Flet 客户端 — FrontAgent 对话窗口"""
 import flet as ft
 import threading
+import asyncio
+from typing import Callable
+from loguru import logger
 
 from event.event_core import Bus,Loop,Router
-from event.events import MessageToUser, UserMessage, AppStart, NotingStart, NotingStop
+from event.events import MessageToUser, UserMessage, AppStart, NotingStart, NotingStop, NotingAlready, TaskLogUpdate
 
 
 
@@ -17,29 +20,46 @@ class GuiModule:
         self._chat_history: list[dict] = []
         # 笔记是否正在进行的唯一真源，界面重新挂载时据此恢复按钮状态
         self._noting = False
+        # 后台Agent是否已就绪：收到 NotingAlready 之前不允许开始/停止笔记
+        self._agent_ready = False
+        # 最新一条后台工作日志，收到 TaskLogUpdate 后更新
+        self._task_log: dict = {"now_task": None, "content": ""}
 
         # 界面跑起来后由 main / talk_page 填上的引用
         self._page: ft.Page | None = None
         self._set_messages = None
+        self._set_agent_ready = None
+        self._set_task_log = None
         # 聊天记录会被 UI 线程和本地总线线程同时读写，加把锁
         self._chat_lock = threading.Lock()
+
+        self._close_backend: Callable|None = None
 
         # ------ 注册回调函数 ------
         # self._local_bus.subscribe(AppStart,self.app_start)服了flet没法跑在副线程上
         # 助手什么时候说话由它自己决定，这里只负责把收到的消息显示出来
         self._local_bus.subscribe(MessageToUser,self.receive_message)
+        self._local_bus.subscribe(NotingAlready,self.noting_already)
+        self._local_bus.subscribe(TaskLogUpdate,self.task_log_update)
 
         # ------ 订阅总线事件 ------
         # core_bus_router.subscribe(AppStart,self._local_loop)
         core_bus_router.subscribe(MessageToUser,self._local_loop)
+        core_bus_router.subscribe(NotingAlready,self._local_loop)
+        core_bus_router.subscribe(TaskLogUpdate,self._local_loop)
 
     def main(self,page: ft.Page):
         self._page = page
         page.title = "课堂助手"
+        page.window.title_bar_hidden = True
         page.theme_mode = ft.ThemeMode.LIGHT
-        page.window.width = 600
-        page.window.height = 700
+        page.window.width = 432
+        page.window.height = 768
+        #最大最小窗口尺寸
+        page.window.min_width = 360
+        page.window.min_height = 640
         page.theme = ft.Theme(font_family="Microsoft YaHei")
+        page.padding = 10
 
         # ── 侧边栏 ──
         async def handle_show_drawer(e):
@@ -54,6 +74,36 @@ class GuiModule:
             elif idx == 1:
                 ft.context.page.navigate("/config")
             await page.close_drawer()
+
+        async def handle_exit(e):
+            # 先切到“正在退出”状态并禁用按钮，避免重复点击
+            exit_button.disabled = True
+            exit_button.icon = None
+            exit_button.content = ft.Row(
+                [
+                    ft.ProgressRing(width=16, height=16, stroke_width=2),
+                    ft.Text("正在退出"),
+                ],
+                spacing=8,
+                tight=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+            page.update()
+
+            page.window.prevent_close = True
+            try:
+                if self._close_backend:  # 如果传入了关闭后台总线线程的方法
+                    logger.info("正在关闭后台线程...")
+                    await asyncio.to_thread(self._close_backend)
+            finally:
+                page.window.prevent_close = False
+                await page.window.close()
+
+        exit_button = ft.TextButton(
+            "退出程序",
+            icon=ft.Icons.LOGOUT,
+            on_click=handle_exit,
+        )
 
         drawer = ft.NavigationDrawer(
             on_dismiss=lambda e: None,
@@ -70,6 +120,10 @@ class GuiModule:
                     label="选项",
                     icon=ft.Icons.SETTINGS_OUTLINED,
                     selected_icon=ft.Icons.SETTINGS,
+                ),
+                ft.Container(
+                    content=exit_button,
+                    padding=ft.Padding.symmetric(horizontal=16, vertical=8),
                 ),
             ],
         )
@@ -98,6 +152,10 @@ class GuiModule:
             self._set_messages = set_messages
             input_text, set_input_text = ft.use_state("")
             noting, set_noting = ft.use_state(self._noting)
+            agent_ready, set_agent_ready = ft.use_state(self._agent_ready)
+            self._set_agent_ready = set_agent_ready
+            task_log, set_task_log = ft.use_state(self._task_log)
+            self._set_task_log = set_task_log
 
             def toggle_noting(e):
                 if noting:
@@ -119,22 +177,45 @@ class GuiModule:
                 set_input_text("")
 
             def build_bubble(m: dict):
-                return ft.Column(
+                bubble = ft.Column(
                     [
-                        ft.Text("你" if m["is_user"] else "助手", size=12, weight=ft.FontWeight.BOLD),
+                        ft.Text("你" if m["is_user"] else "助手", size=14, weight=ft.FontWeight.W_400, color=ft.Colors.GREY_600),
                         ft.Container(
-                            content=ft.Text(m["text"], selectable=True),
+                            content=ft.Text(m["text"],size=16, weight=ft.FontWeight.W_400, selectable=True),
                             padding=12,
-                            bgcolor=ft.Colors.BLUE_100 if m["is_user"] else ft.Colors.GREY_200,
+                            bgcolor=ft.Colors.GREY_200 if m["is_user"] else ft.Colors.TRANSPARENT,
                             border_radius=10,
                         ),
                     ],
+                    spacing=2,  #用户名字和消息气泡之间的间距
                     horizontal_alignment=ft.CrossAxisAlignment.END if m["is_user"] else ft.CrossAxisAlignment.START,
+                )
+                if m["is_user"]:
+                    # 用户消息左侧始终与页面边缘留 50 的间隔（长消息最多只能铺到这儿）
+                    return ft.Container(content=bubble, margin=ft.Margin.only(left=50))
+                return bubble
+
+            def build_log_line(log: dict):
+                now_task = log["now_task"]
+                idle = now_task is None
+                return ft.Text(
+                    spans=[
+                        ft.TextSpan("后台任务: ",
+                                    style=ft.TextStyle(size=15, color=ft.Colors.GREY_400)),
+                        ft.TextSpan("空闲中" if idle else now_task,
+                                    style=ft.TextStyle(size=15, color=ft.Colors.GREEN_400 if idle else ft.Colors.RED_400)),
+                        ft.TextSpan(" | ",
+                                    style=ft.TextStyle(size=15, color=ft.Colors.GREY_200)),
+                        ft.TextSpan(log["content"],
+                                    style=ft.TextStyle(size=15, color=ft.Colors.GREY_400)),
+                    ],
+                    max_lines=1,                    # 无论多长都只占一行，不换行撑高
+                    overflow=ft.TextOverflow.ELLIPSIS,   # 超长时末尾省略号
                 )
 
             chat_list = ft.ListView(
                 controls=[build_bubble(m) for m in messages],
-                spacing=10,
+                spacing=20,     #每个消息气泡之间的间距
                 expand=True,
                 auto_scroll=True,
             )
@@ -150,29 +231,51 @@ class GuiModule:
             return ft.Container(
                 content=ft.Column(
                     [
-                        ft.Container(
-                            content=ft.Row(
-                                [ft.IconButton(icon=ft.Icons.MENU, on_click=handle_show_drawer),
-                                 ft.ElevatedButton(
-                                     "停止笔记" if noting else "开始笔记",
-                                     icon=ft.Icons.STOP_ROUNDED if noting else ft.Icons.PLAY_ARROW,
-                                     bgcolor=ft.Colors.RED_400 if noting else None,
-                                     color=ft.Colors.WHITE if noting else None,
-                                     on_click=toggle_noting,
-                                 )],
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        # 标题栏被隐藏了，用顶部这一条作为拖动区域（双击可最大化）
+                        ft.WindowDragArea(
+                            content=ft.Container(
+                                content=ft.Row(
+                                    [ft.IconButton(icon=ft.Icons.MENU, on_click=handle_show_drawer),
+                                     ft.ElevatedButton(
+                                         "停止笔记" if noting else "开始笔记",
+                                         icon=ft.Icons.STOP_ROUNDED if noting else ft.Icons.PLAY_ARROW,
+                                         bgcolor=(ft.Colors.GREY_200 if not agent_ready
+                                                  else ft.Colors.RED_50 if noting
+                                                  else ft.Colors.GREEN_500),
+                                         color=(ft.Colors.GREY_500 if not agent_ready
+                                                else ft.Colors.RED_ACCENT if noting
+                                                else ft.Colors.WHITE),
+                                         disabled=not agent_ready,
+                                         tooltip="后台Agent尚未就绪" if not agent_ready else None,
+                                         on_click=toggle_noting,
+                                     )],
+                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                ),
+                                padding=5,
+                                bgcolor=ft.Colors.TRANSPARENT,
+
                             ),
-                            padding=5,
-                            bgcolor=ft.Colors.GREY_100,
                         ),
-                        ft.Container(content=chat_list, padding=10, expand=True),
+                        # ── 后台工作日志条 ──
+                        ft.Container(
+                            content=build_log_line(task_log),
+                            alignment=ft.Alignment.CENTER_LEFT,
+                            padding=ft.Padding.symmetric(horizontal=10, vertical=4),    #原horizontal=10, vertical=4
+                            bgcolor=ft.Colors.TRANSPARENT,
+                            border=ft.Border.only(
+                                bottom=ft.border.BorderSide(1, ft.Colors.GREY_100)
+                            ),
+                        ),
+                        ft.Container(content=chat_list,
+                                     padding= ft.padding.Padding(left=10, top=0, right=10, bottom=10),  #顶部边距为0，其余为10
+                                     expand=True),
                         ft.Container(
                             content=ft.Row(
                                 [input_field, ft.IconButton(ft.Icons.SEND_ROUNDED, on_click=send_message)],
                                 spacing=5,
                             ),
                             padding=10,
-                            bgcolor=ft.Colors.WHITE,
+                            bgcolor=ft.Colors.TRANSPARENT,
                         ),
                     ],
                     spacing=0,
@@ -221,6 +324,32 @@ class GuiModule:
         """收到助手主动发来的消息：只负责追加气泡，不关心它对应哪条用户消息"""
         self._append_chat({"text": event.content, "is_user": False})
 
+    def noting_already(self, event: NotingAlready):
+        """后台Agent就绪：解锁开始/停止笔记按钮"""
+        self._agent_ready = True
+        page, set_agent_ready = self._page, self._set_agent_ready
+        if page is None or set_agent_ready is None:
+            # 界面还没起来，状态已经记下，talk_page 初始化时会自己读
+            return
+        # 回调在本地总线线程里执行，切回 Flet 的事件循环再改状态
+        page.run_task(self._apply_agent_ready, set_agent_ready)
+
+    async def _apply_agent_ready(self, set_agent_ready):
+        set_agent_ready(self._agent_ready)
+
+    def task_log_update(self, event: TaskLogUpdate):
+        """后台工作日志更新：刷新顶部日志条"""
+        self._task_log = {"now_task": event.now_task, "content": event.content}
+        page, set_task_log = self._page, self._set_task_log
+        if page is None or set_task_log is None:
+            # 界面还没起来，状态已经记下，talk_page 初始化时会自己读
+            return
+        # 回调在本地总线线程里执行，切回 Flet 的事件循环再改状态
+        page.run_task(self._apply_task_log, set_task_log, self._task_log)
+
+    async def _apply_task_log(self, set_task_log, log: dict):
+        set_task_log(log)
+
     def _snapshot_chat(self) -> list[dict]:
         with self._chat_lock:
             return list(self._chat_history)
@@ -241,6 +370,13 @@ class GuiModule:
     async def _apply_chat(self, set_messages, messages: list[dict]):
         set_messages(messages)
 
+    def set_exit_func(self, func: Callable):
+        """用于传入关闭后台BusLoop的命令"""
+        # 真得这么写吗？
+        self._close_backend = func
+
     def gui_start(self,):
         # 给主线程用的
         ft.app(self.main)
+
+

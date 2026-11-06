@@ -15,34 +15,45 @@ import time
 from langchain.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
 
 from event.event_core import Bus,Loop,Router,Event
-from event.events import AppStart, NotingStart, NotingStop,TaskMessage, ReporterResult, RequestReporterData
+from event.events import AppStart, AppClose, NotingStart, NotingStop,TaskMessage, ReporterResult, RequestReporterData
 from core.background_agent.BaseTask import Task, FunctionTask
 from core.background_agent.Tasks import NotingTask, MessageTask
 from core.background_agent.Agent import BackgroundAgent
+from core.background_agent.log_store import LogStore
 from core.wiki.read_wiki_rules import get_wiki_rule
+
+class _STOP_LOOP(Task):
+    task_name:str = "STOP_LOOP"
+    pass
 
 
 """本模块的核心任务是维护后台agent任务循环"""
 class BackgroundAgentModule:
-    def __init__(self,core_bus_router:Router,core_loop:Loop,local_bus:Bus,local_loop:Loop, agent: BackgroundAgent):
+    def __init__(self,core_bus_router:Router,core_loop:Loop,local_bus:Bus,local_loop:Loop, agent: BackgroundAgent, log_store:LogStore):
         self._core_loop = core_loop
         self._local_bus = local_bus
         self._local_loop = local_loop
+        self._agent = agent
+        self._log_store = log_store # 仅持有该模块，无相关逻辑
 
+        self._STOP = _STOP_LOOP()   # 用于停止任务循环，防止queue.get()持续等待
         self._task_looping = False
         self._noting = False    # flag,用于标识是否维持笔记循环（在拿到一个noting任务的时候往任务循环里塞入一个新的noting任务）
-        self._agent = agent
         self._task_list = PriorityQueue()
         self._counter = count()  # 本字段用来保证优先级队列能够按任务创建顺序正常排序，不代表实际意义
         self._lock =  threading.Lock()
+        self._loop_finish_event = threading.Event()
 
         # ↓运行时的值形如{114514:{"flag":threading.Event(),"data": "..."}}，转述模块的回信数据会保存在这里的data字段中，flag字段用于标识数据传回状态（已到达/未到达）
         self._reported_data: dict[str,dict] = {}    # 请求ID -> 回信数据
         self._notting_singleton_lock: list[int] = [0]   # 用来假装一个可以就地修改的int值，用于对笔记任务进行去重。初值必须为0（虽然是list但实际上只会用到第一个位置的值）
 
+        # ------ 注册关闭时等待事件 ------
+        self._local_loop.register_stop_waiting_event(self._loop_finish_event)
 
         # ------ 注册回调函数 ------
         self._local_bus.subscribe(AppStart,self.run)
+        self._local_bus.subscribe(AppClose,self.stop)
         self._local_bus.subscribe(NotingStart,self.noting_start)
         self._local_bus.subscribe(NotingStop,self.noting_stop)
         self._local_bus.subscribe(TaskMessage,self.response_task_message)
@@ -50,12 +61,16 @@ class BackgroundAgentModule:
 
         # ------ 订阅总线事件 ------
         core_bus_router.subscribe(AppStart,self._local_loop)
+        core_bus_router.subscribe(AppClose,self._local_loop)
         core_bus_router.subscribe(NotingStart,self._local_loop)
         core_bus_router.subscribe(NotingStop,self._local_loop)
         core_bus_router.subscribe(TaskMessage,self._local_loop)
         core_bus_router.subscribe(ReporterResult,self._local_loop)
 
     def _append_task(self, task: Task):
+        if task is self._STOP:
+            self._task_list.put((-114514, next(self._counter), task))   # STOP任务会被排在最前面
+            return
         # task的合法性检查
         if not (task.task_name and task.route_before_agent and task.route_after_agent):
             raise ValueError("任务名，Agent前路由和Agent后路由不能为空！")
@@ -185,7 +200,10 @@ class BackgroundAgentModule:
         self._task_looping = True
         while self._task_looping:
             task = self._task_list.get()[2]  # 阻塞等待（如果没拿到就等）
-            logger.debug("任务管理器已获取新任务")
+            logger.debug(f"任务管理器已获取新任务：{task}")
+
+            if task is self._STOP:
+                break   #停止Loop
 
             """如果是函数类任务则直接执行handler完事"""
             if isinstance(task, FunctionTask):
@@ -210,6 +228,14 @@ class BackgroundAgentModule:
             except Exception as e:
                 logger.error(f"任务管理器执行时出现意外错误：{e} \n请尽快自查代码逻辑")
                 raise e # 日志记完了，抛出异常
+        # loop结束后升起结束旗帜
+        logger.info("后台任务Loop已结束")
+        self._loop_finish_event.set()
+
+    def stop(self,event:AppClose):
+        self._append_task(self._STOP)
+        self._task_looping = False
+        self._agent.stop_working()  #掐断后台agent循环决策（仅对默认agent图有效，如果运行在自定义图块上则无效）
 
     def run(self,event:Event):
         task_loop_thread = threading.Thread(target=self.task_loop, daemon=True)

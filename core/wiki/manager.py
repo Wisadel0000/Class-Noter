@@ -38,27 +38,33 @@ class WikiManager:
         # ------ 工具注册 ------
         self._tools_manager.register("show_all_page",
                                      self.show_all_page,
-                                     "列出库中所有已有词条的名称，每一个对应词条的页面都可以用这里返回的名称索引到。")
+                                     "列出库中所有已有词条的名称，每一个对应词条的页面都可以用这里返回的名称索引到。",
+                                     log_func=self.show_all_page_log)
         self._tools_manager.register("edit_page_by_str",
                                      self.edit_page_by_str,
                                      "提供符合wiki语法的字符串，以创建对应词条的页面或者用新内容覆盖对应词条的页面，为了保护页面的编辑历史，请在覆盖旧页面时原样保留原本的“编辑记录”板块的内容，仅通过提供的commit_message参数来添加新的编辑记录。本方法会自动检查语法的合法性和健全性，并返回错误码，如果存在“error”和“warn”级别的错误将不会保存本次修改",
-                                     args_schema=self.edit_page_by_str_args)
+                                     args_schema=self.edit_page_by_str_args,
+                                     log_func=self.edit_page_by_str_log)
         self._tools_manager.register("delete_page",
                                      self.delete_page,
                                      "删除一个词条对应的页面",
-                                     args_schema=self.delete_page_args)
+                                     args_schema=self.delete_page_args,
+                                     log_func=self.delete_page_log)
         self._tools_manager.register("read_page",
                                      self.read_page,
                                      "阅读一个词条对应的页面",
-                                     args_schema=self.read_page_args)
+                                     args_schema=self.read_page_args,
+                                     log_func=self.read_page_log)
         self._tools_manager.register("amend_edit_record",
                                      self.amend_edit_record,
                                      "修改对应页面指定索引的编辑记录",
-                                     args_schema=self.amend_edit_record_args)
+                                     args_schema=self.amend_edit_record_args,
+                                     log_func=self.amend_edit_record_log)
         self._tools_manager.register("del_edit_record",
                                      self.del_edit_record,
                                      "删除对应页面指定索引的编辑记录",
-                                     args_schema=self.del_edit_record_args)
+                                     args_schema=self.del_edit_record_args,
+                                     log_func=self.del_edit_record_log)
         # ------ 工具集注册 -----
         self._tools_manager.tool_set_register("wiki_tool_set",
                                               ["show_all_page",
@@ -94,6 +100,8 @@ class WikiManager:
     def show_all_page(self):
         """列出库中所有已有词条的名称，每一个对应词条的页面都可以用这里返回的名称索引到。"""
         return str(self._store.slugs())
+    def show_all_page_log(self):
+        return "查看了所有已有词条的页面名"
 
     class edit_page_by_str_args(BaseModel):
         entry: str = Field(description="字符串，要创建/修改的词条名")
@@ -114,6 +122,8 @@ class WikiManager:
             self._pages[entry] = page   # 更新内存中的页面对象
             self._store.save(page)  # 不存在就新建，存在就整页覆盖
             return f"页面保存成功, 附诊断报告:{report["items"]}"
+    def edit_page_by_str_log(self,  entry: str, content: str, commit_message: str):
+        return f"创建/修改了{entry}页面：{commit_message}"
 
     # 删除词条
     class delete_page_args(BaseModel):
@@ -123,6 +133,8 @@ class WikiManager:
         if entry in self._pages:
             self._pages.pop(entry, None)
         self._store.delete(entry)
+    def delete_page_log(self, entry: str):
+        return f"删除了{entry}页面"
 
     # 阅读词条
     class read_page_args(BaseModel):
@@ -131,6 +143,8 @@ class WikiManager:
         """阅读指定词条的页面"""
         page = self._get_page(entry)
         return page.to_text()   #直接把原文发给ai
+    def read_page_log(self, entry: str):
+        return f"阅读了{entry}页面"
 
     class amend_edit_record_args(BaseModel):
         entry: str = Field(description="字符串，要修改编辑记录的词条名")
@@ -141,6 +155,8 @@ class WikiManager:
         page = self._get_page(entry)
         ops.amend_edit_record(page=page,n=index,message=new_message)
         self._store.save(page)
+    def amend_edit_record_log(self,entry:str,index:int,new_message:str):
+        return f"修改了{entry}页面的第{index}条编辑记录为：{new_message}"
 
     class del_edit_record_args(BaseModel):
         entry: str = Field(description="字符串，要删除编辑记录的词条名")
@@ -150,6 +166,8 @@ class WikiManager:
         page = self._get_page(entry)
         ops.remove_edit_record(page=page,n=index)
         self._store.save(page)
+    def del_edit_record_log(self, entry: str, index: int):
+        return f"删除了{entry}页面的第{index}条编辑记录"
 
     # class create_new_page_args(BaseModel):
     #     title: str = Field(description= "字符串，新建的知识词条的名字，同时也是页面标题，最好相对简洁、概括，直接以该知识的名字命名最佳。")

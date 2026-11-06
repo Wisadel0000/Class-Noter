@@ -2,6 +2,10 @@ from dataclasses import dataclass
 from event.event_core import Event
 
 @dataclass
+class NotingAlready(Event):
+    pass
+
+@dataclass
 class NotingStart(Event):
     """开始做笔记"""
     pass
@@ -15,6 +19,10 @@ class NotingStop(Event):
 
 @dataclass
 class AppStart(Event):
+    pass
+
+@dataclass
+class AppClose(Event):
     pass
 
 @dataclass
@@ -44,7 +52,7 @@ class ReporterResult(Event):
 
 @dataclass
 class TaskLogUpdate(Event): # 最新的后台Agent工作输出
-    now_task: str   #当前任务类型或空闲状态
+    now_task: str|None   #当前任务类型或空闲状态
     content:str     #当前的工作输出
 
 @dataclass

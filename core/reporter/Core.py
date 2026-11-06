@@ -35,23 +35,32 @@ class AsrModule:
         self._core_loop = core_loop
 
         self._is_running = False
+        self._asr_idle = threading.Event()
+        self._asr_idle.set() #默认升起
         self._lock = threading.Lock()
         self._text = ""
         self._text_total = ""  # 留档（以防万一用到了全部的）
-        self.model = self._load_model()
+        self.model: AutoModel | None = None
+
+        # ------ 注册结束时等待事件 ------
+        # self._local_loop.register_stop_waiting_event(self._asr_idle)    #不等待
 
         # ------ 注册回调函数 ------
         # 笔记事件的启动和停止
-        self._local_bus.subscribe(events.NotingStart, self.run)
-        self._local_bus.subscribe(events.NotingStop, self.stop)
-        self._local_bus.subscribe(events.RequestReporterData, self._response_data_request)
+        self._local_bus.subscribe(events.AppStart, self.when_app_start)
+        self._local_bus.subscribe(events.NotingStart, self.asr_start)
+        self._local_bus.subscribe(events.NotingStop, self.asr_stop)
+        self._local_bus.subscribe(events.AppClose, self.asr_stop)
+        self._local_bus.subscribe(events.RequestReporterData, self.response_data_request)
         # ------ 订阅总线事件 ------
         # 笔记事件的启动和停止
+        core_bus_router.subscribe(events.AppStart, self._local_loop)
+        core_bus_router.subscribe(events.AppClose, self._local_loop)
         core_bus_router.subscribe(events.NotingStart, self._local_loop)
         core_bus_router.subscribe(events.NotingStop, self._local_loop)
         core_bus_router.subscribe(events.RequestReporterData, self._local_loop)
 
-    def _response_data_request(self, event: events.RequestReporterData):
+    def response_data_request(self, event: events.RequestReporterData):
         request_id = event.request_id
         data = self._get_new_text()
         # 回信
@@ -89,21 +98,36 @@ class AsrModule:
         logger.info("模型加载完成！\n")
         return model
 
+    def _load_model_and_report_already(self):
+        """先加载模型，模型加载好了会向总线发送就绪事件，本函数用于将模型加载至于独立线程上"""
+        self.model = self._load_model()
+        self._core_loop.post(events.NotingAlready())
+
     def _asr_dual_thread(self):
         """
         ASR 线程从队列取音频，积攒到足够量再做 VAD 识别。
         双线程：录音不中断，ASR 并行处理
         线程1：持续的录音线程，将录制结果放入一个队列
         线程2：循环等待从队列中取音频段落，攒够量后做 VAD 识别
-        （保证不会丢失任何一秒音频））
+        （理论上保证不会丢失任何一秒音频，除非cpu太拉单轮识别用时超过30秒，超出30秒的音频就不得不丢掉了））
         """
 
         # 录音的结果会保存再这个队列中（采样点序列）
+
+        if self.model is None:
+            self._core_loop.post(events.NotingStop())
+            logger.error("模型未能加载成功，无法启动转述模块，已停止任务")
+            # 清理flag
+            self._is_running = False
+            self._asr_idle.set()
+            return
+
         record_queue: queue.Queue = queue.Queue(maxsize=30)
         # ---- 录音线程 ----
+        _is_recording = True    #运行标志，停止时使用该标准停止录音线程
         # 持续录音
         def record_thread_func():
-            while self._is_running:
+            while _is_recording:
                 chunk = sd.rec(
                     int(SAMPLE_RATE),
                     samplerate=SAMPLE_RATE,
@@ -115,7 +139,10 @@ class AsrModule:
                 if NUM_CHANNELS > 1:
                     chunk = chunk.mean(axis=1)
                 chunk = chunk.flatten()
-                record_queue.put(chunk)
+                try:
+                    record_queue.put(chunk,timeout=1)   #超时1秒就抛弃重算
+                except queue.Full:
+                    continue
         #启动线程
         record_thread = threading.Thread(target=record_thread_func, daemon=True)
         record_thread.start()
@@ -129,7 +156,10 @@ class AsrModule:
         try:
             while self._is_running:
                 # 从队列取一块音频
-                chunk = record_queue.get()     #等待结果继续
+                try:
+                    chunk = record_queue.get(timeout=1)     #等待结果继续
+                except queue.Empty:
+                    continue
                 audio_buffer = np.concatenate([audio_buffer, chunk])
 
                 # 看看攒了多少未处理的音频
@@ -167,22 +197,29 @@ class AsrModule:
 
                 if consumed_total > 0:
                     processed_samples += consumed_total
-        except KeyboardInterrupt:
-            self._is_running = False
-
-        record_thread.join()
-        print(f"\nASR已结束工作。AsrModule._is_running = {self._is_running}")
+        finally :
+            _is_recording = False
+            self._asr_idle.set()
+            print(f"\nASR已结束工作。AsrModule.")
 
     def _asr_record(self, context: str):
         with open("./ASR_RECORD.txt", 'a', encoding='utf-8') as f:
             f.write(context)
 
-    def run(self, _event: event.Event):
-        if self._is_running: return  # 如果已经处于笔记模式则返回
-        self._is_running = True
-        threading.Thread(target=self._asr_dual_thread, daemon=True).start()
-        logger.info("ASR已启动")
+    def when_app_start(self,_event:event.Event):
+        # 在其他线程加载模型，以防卡住界面启动
+        threading.Thread(target=self._load_model_and_report_already, daemon=True).start()
 
-    def stop(self, _event: event.Event):
+    def asr_start(self, _event: event.Event):
+        if self._asr_idle.wait(timeout=10): #仅当上一个录音线程真正结束时创建新线程，等待超过10秒视为上一个录音线程没有收到终止或被阻止
+            self._is_running = True
+            self._asr_idle.clear()  # 取消闲置状态标志
+            threading.Thread(target=self._asr_dual_thread, daemon=True).start()
+            logger.info("ASR已启动")
+        else:
+            logger.warning(f"时间上重叠的Asr线程请求，已去重（我不知道怎么可能会出现这种情况，但如果这行日志真的出现在了终端里，你最好看看代码）")
+            return  # 如果录音线程还在工作，且没有要结束的迹象，则返回,不应重复启动线程
+
+    def asr_stop(self, _event: event.Event):
         self._is_running = False
         # 两个录音线程会自行停止

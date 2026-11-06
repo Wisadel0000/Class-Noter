@@ -39,9 +39,10 @@ class LLMRouter:
                                    model=setting.web_model,
                                    api_key=setting.web_api_key,
                                    base_url=setting.web_base_url,
-                                   temperature=0, )
+                                   temperature=0,
+                                   timeout=60, max_retries=2)
         elif setting.model_provider == ModelProvider.ollama:
-            return ChatOllama(model=setting.ollama_model, temperature=0, reasoning=False)
+            return ChatOllama(model=setting.ollama_model, temperature=0, reasoning=False,client_kwargs={"timeout": 60})
         else:
             raise ValueError("配置值异常：未知的提供商")
             #理论上不可能触发这个，除非运行时有外部什么地方强行访问修改了._model，因为配置在启动时如果出现非法值会自动回落
@@ -52,9 +53,10 @@ class LLMRouter:
                                    model=setting.default_model,
                                    api_key=setting.default_api_key,
                                    base_url=setting.default_base_url,
-                                   temperature=0, )
+                                   temperature=0,
+                                   timeout=60, max_retries=2)
         elif setting.default_model_provider == ModelProvider.ollama:
-            return ChatOllama(model=setting.default_ollama_model, temperature=0, reasoning=False)
+            return ChatOllama(model=setting.default_ollama_model, temperature=0, reasoning=False,client_kwargs={"timeout": 60})
         else:
             raise ValueError("配置值异常：未知的提供商")
 

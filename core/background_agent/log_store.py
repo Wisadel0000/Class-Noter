@@ -1,8 +1,8 @@
 """
 日志器
-- 以块为单位接收来自Agent的输出信息，并在这里完成对“任务状态”和“日志”的维护
-- 接收任务开始和任务完成的事件，以按时清理工作日志缓存
-- 为前台Agent提供事件响应，在前台Agent询问后，整理当前进度介绍，并发送事件向前台回信
+- 以块为单位接收来自Agent的输出信息，并在这里完成对“任务状态”和“日志”的维护 -bingo
+- 接收任务开始和任务完成的事件，以按时清理工作日志缓存    -bingo
+- 为前台Agent提供事件响应，在前台Agent询问后，整理当前进度介绍，并发送事件向前台回信 -bingo
 - 提供日志更新事件，供Gui滚动显示。 --bingo
 
 """
@@ -10,7 +10,7 @@ import threading
 from loguru import logger
 from time import sleep
 from queue import Queue
-from langchain.messages import SystemMessage,HumanMessage
+from langchain_core.messages import SystemMessage,HumanMessage, ChatMessage
 
 from core.background_agent._event import AgentLog,TaskOverLog,TaskStartLog
 from core.tools.ToolsManager import ToolsManager
@@ -48,21 +48,17 @@ class LogStore:
         wait = 1    # 每轮至少间隔时间
         while self._running:
             sleep(wait)    #每次消息间隔wait秒钟
-            event = self._log_sender_queue.get()    #等待
+            event = self._log_poster_queue.get()    #等待
             self._core_loop.post(event)
 
     def _post_log(self,task:str|None,content:str|None):
-        if task is None:
-            now_task = "空闲中"
-        else:
-            now_task = task
-        self._log_poster_queue.put(TaskLogUpdate(now_task,content))
+        self._log_poster_queue.put(TaskLogUpdate(task,content)) #如果task=None前端/Gui则会显示“空闲中”
 
     def task_start(self,event:TaskStartLog):
         self._now_task = event.task_name
 
     def task_over(self,event:TaskOverLog):
-        self._post_log(self._now_task,content="暂无正在进行的工作")  #更新前台日志 TODO等Gui把对None的默认显示做出来之后就直接content=None
+        self._post_log(task=None,content="暂无正在进行的工作")  #更新前台日志
         self._now_task = None   #重置
         self._now_messages = [] #清空
 
@@ -82,7 +78,7 @@ class LogStore:
             for call in event.tool_calls:
                 log_func = self._tools_manager.get_log_func_by_name(call["name"])
                 if log_func:
-                    content = f"调用了工具:{call["name"]},调用详情:{log_func(call["args"])}"
+                    content = f"调用了工具:{call["name"]},调用详情:{log_func(**call["args"])}"
                 else:
                     content = f"调用了工具 :{call['name']}"  # 没有日志方法就只会显示名字，不利于大模型阅读，不建议这么做，最好还是写一个对应的日志工具
                 tool_calls.append(content)
@@ -94,14 +90,14 @@ class LogStore:
         """用于向GUI回信报告当前工作状态"""
         model = self._provider_router.route()
         system_prompt = """
-        你是一个日志汇报员，你负责根据后台agent的工作日志给前台agent人员汇报其咨询的工作进展详情。
+        你是一个日志汇报员，你负责根据后台agent的工作日志给前台agent汇报其咨询的工作进展详情。
         你应该直接生成回答的具体内容，且简洁干练，切中问题要点。
         如果前台问你“当前进度到哪儿了”或者让你“汇报最近进展”，则不用观察工具调用信息，直接根据agent输出的计划内容和最后一轮的工作进度来回答。
         """
         request = f"目前全部后台工作日志：\n{"\n".join(self._now_messages)}" + f"前台咨询内容:{event.content}"
-        result = model.invoke([SystemMessage(system_prompt),HumanMessage(request)])
+        result = model.invoke([SystemMessage(system_prompt),ChatMessage(content= request,role="前台Agent")])
 
-        logger.debug(f"工作日志汇报输出：{result}")
+        logger.debug(f"工作日志报告输出：{result}")
 
         #投递回信
         self._core_loop.post(WorkStateReport(result.content))

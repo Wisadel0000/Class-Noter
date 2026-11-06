@@ -65,11 +65,15 @@ class Loop:
         self.bus = bus
         self._queue: queue.Queue[Event] = queue.Queue()
         self._running = False
+        self._wait_before_stop: list[threading.Event] = []  # 一个列表用于保存所有在关闭时必须等待升起（等待某些逻辑完成）的旗帜
 
     # 任何线程都可以安全地投递事件
     def post(self, event: Event) -> None:
         """向Loop中投递一个事件"""
         self._queue.put(event)
+
+    def register_stop_waiting_event(self,flag:threading.Event):
+        self._wait_before_stop.append(flag)
 
     def stop(self) -> None:
         """用于停止Loop的运行"""
@@ -82,6 +86,11 @@ class Loop:
         while self._running:
             event = self._queue.get()          # 阻塞等待（如果没拿到就等）
             if event is self.STOP:
+                for flag in self._wait_before_stop:
+                    if flag.wait(timeout=5):
+                        continue
+                    else:
+                        logger.warning(f"【Bus:{id(self.bus)}|Loop:{id(self)}】关闭程序时出现超时未能结束的任务")
                 self._running = False
                 break
             self.bus.publish(event)

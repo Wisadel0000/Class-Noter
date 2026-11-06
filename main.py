@@ -8,8 +8,8 @@ from pathlib import Path
 import threading
 from loguru import logger
 
-from event.event_core import Bus,Loop,Router
-from event.events import AppStart
+from event.event_core import Bus,Loop,Router,Event
+from event.events import AppStart,AppClose
 from setting import SettingStore
 from router.provider import LLMRouter
 from core.tools.di import tools_manager_init
@@ -24,15 +24,29 @@ class App:
     def __init__(self, bus:Bus, loop:Loop, setting_store: SettingStore, gui: GuiModule, models_loops: list[Loop] , modules: list):
         self._core_bus = bus
         self._core_loop = loop
+        self._core_loop_thread: threading.Thread|None = None
         self._setting_store = setting_store
         self._gui = gui
         self._models_loops = models_loops
+        self._models_loops_threads = []
         self._modules = modules
 
     def _run_models_threading(self):
         for loop in self._models_loops:
             logger.debug(f"{loop}线程正在启动")
-            threading.Thread(target=loop.run, daemon=True).start()
+            thread = threading.Thread(target=loop.run, daemon=True)
+            self._models_loops_threads.append(thread)   #持有线程
+            thread.start()
+
+    def stop(self):
+        for loop in self._models_loops:
+            loop.post(AppClose())   #不走转发以防核心总线延迟导致AppClose事件发生在self.STOP事件之后
+            loop.stop()     #发送Loop停止事件（self.STOP）
+        for thread in self._models_loops_threads:
+            thread.join(timeout=10)   #等待线程结束
+        self._core_loop.stop()
+        self._core_loop_thread.join()
+        logger.info("后台线程已结束")
 
     def start(self):
         self._run_models_threading()
@@ -41,7 +55,10 @@ class App:
         logger.info("启动事件已发送")
         # self._core_loop.run()
         # 气笑了flet只能run在主线程上，那岂不是只能委屈核心loop跑在守护线程上了？
-        threading.Thread(target=self._core_loop.run, daemon=True).start()
+        self._core_loop_thread = threading.Thread(target=self._core_loop.run, daemon=True)
+        self._core_loop_thread.start()
+
+        self._gui.set_exit_func(self.stop)  # 向Gui传入停止方法
         self._gui.gui_start()
 
 

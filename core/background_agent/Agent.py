@@ -1,5 +1,5 @@
 """这个文件负责编写Agent的具体业务代码和构建逻辑"""
-from langchain.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage, ChatMessage
 from langgraph.graph import StateGraph, START
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
@@ -32,9 +32,13 @@ class BackgroundAgent:
 
         self._local_loop = local_loop
 
+        self._stop_working = False
         self._agent: CompiledStateGraph = self.compile()
         self._default_tools = "default" # 通常应该是什么呢，比如说是日志工具
         self._now_task: AgentTask | MultiTask | None = None #agent工作时用这个来访问自己正在进行的工作信息
+
+    def stop_working(self):
+        self._stop_working = True
 
     def invoke(self, task: AgentTask | MultiTask):
         #错误处理
@@ -76,7 +80,7 @@ class BackgroundAgent:
 
         last_messages = state["messages"]
         # if state.get('llm_calls', 0) == 0: 卧槽谁说这玩意会堆积上下文的
-        last_messages = [SystemMessage(content=system_prompt),HumanMessage(content=human_msg)] + last_messages
+        last_messages = [SystemMessage(content=system_prompt),HumanMessage(content=human_msg)] + last_messages  # TODO记得修改为ChatMessage版本查看效果
 
         result = _model_with_tools.invoke(last_messages)
         logger.debug(f"agent工作输出:{result.content}")
@@ -124,6 +128,11 @@ class BackgroundAgent:
         return self._block_manager.map_to_in_nodes(task.route_before_agent) # 使用这个函数将所有的图块名路由到正确的节点上
 
     def _router_after_agent(self, state: MessageState) -> str:
+        # 如果外部发起停止指令则直接路由到end
+        if self._stop_working:
+            logger.warning(f"检测到程序终止事件已终止笔记修改，笔记信息可能丢失，请注意。")
+            return "ender"
+
         # 取出最新的消息
         messages = state["messages"]
         last_message = messages[-1]
