@@ -1,13 +1,14 @@
+import threading
+
 from loguru import logger
 
-from setting import SettingStore
+from settings.setting_store import SettingStore
 from core.tools.ToolsManager import ToolsManager
-from core.wiki.settings import WikiSetting
+from settings.wiki_settings import WikiSetting
 from wikiencoder import WikiStore,WikiPage,ops,parse
 from wikiencoder.validate import lint_page
 from wikiencoder.index import WikiIndex
 
-from typing import TypedDict
 from pydantic import BaseModel, Field
 
 #
@@ -29,11 +30,13 @@ wiki管理器要集中读取wiki文件实例创建对应page对象
 
 class WikiManager:
     def __init__(self,setting_store:SettingStore,tools_manager:ToolsManager):
-        setting_store.register("wiki_setting",WikiSetting)
+        setting_store.subscribe("wiki_setting",self._setting_reload)
         self._setting: WikiSetting = setting_store.get("wiki_setting")
         self._tools_manager: ToolsManager = tools_manager
-        self._store = WikiStore(self._setting.root_path,author="Nairy")
+        self._store = WikiStore(self._setting.raw_path, author="Nairy")
         self._pages: dict[str,WikiPage] ={}
+
+        self._lock =  threading.Lock()
 
         # ------ 工具注册 ------
         self._tools_manager.register("show_all_page",
@@ -83,6 +86,9 @@ class WikiManager:
     关于合法校验：subagent工作时强行加一个校验节点，手动对库合法性进行检查然后如果有异常信息就把加入错误信息状态抛回agent节点
     """
 
+    def _setting_reload(self,setting:WikiSetting):
+        self._setting = setting
+
     def _get_page(self, slug: str) -> WikiPage:
         if slug in self._pages:
             return self._pages[slug]
@@ -94,6 +100,10 @@ class WikiManager:
             except FileNotFoundError as e:
                 logger.info(f"在储存和内存中均未能找到页面:{slug}")
                 raise e
+
+    def get_wiki_path(self):
+        """获取本地wiki文件所在的根目录"""
+        return self._setting.out_path
 
     # ------ Agent工具 ------
     # 查看库中词条列表

@@ -1,9 +1,9 @@
 from wikiencoder import WikiStore
 from wikiencoder.export import export_site
 
-wiki_path = "wiki"
-out_path = "out"
-site_name ="Websocket!!"
+wiki_path = "../../note/raw"
+out_path = "../../note/wiki"
+site_name ="WIKI笔记库"
 
 store = WikiStore(wiki_path,author="Nairy")
 

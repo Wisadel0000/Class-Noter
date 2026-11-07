@@ -8,10 +8,11 @@ from pathlib import Path
 import threading
 from loguru import logger
 
-from event.event_core import Bus,Loop,Router,Event
+from event.event_core import Bus,Loop,Router
 from event.events import AppStart,AppClose
-from setting import SettingStore
-from router.provider import LLMRouter
+from settings.setting_store import SettingStore
+from settings.routers.provider import ProviderRouter
+from settings.di import setting_store_init
 from core.tools.di import tools_manager_init
 from core.wiki.di import wiki_manager_init
 from core.background_agent.di import background_module_init
@@ -70,11 +71,10 @@ def main():
     container.register("CoreBus", lambda c: Bus(),life_cycle="singleton")
     container.register("CoreLoop", lambda c: Loop(c.resolve("CoreBus")),life_cycle="singleton")
     container.register("CoreBusRouter", lambda c: Router(c.resolve("CoreBus")),life_cycle="singleton")
-    container.register("SettingStore",lambda c: SettingStore(path=Path("setting.json")),life_cycle="singleton")
 
     # 设置层
-    # routers
-    container.register("LLMRouter", lambda c: LLMRouter( c.resolve("SettingStore")),life_cycle="singleton")
+    container.register("SettingStore",setting_store_init,life_cycle="singleton")
+    container.register("LLMRouter", lambda c: ProviderRouter(c.resolve("SettingStore")), life_cycle="singleton")
 
     # ToolsManager
     container.register("ToolsManager",tools_manager_init,life_cycle="singleton")
@@ -105,6 +105,7 @@ def main():
         core_loop=c.resolve("CoreLoop"),
         local_bus=c.resolve("Gui_Bus"),
         local_loop=c.resolve("Gui_Loop"),
+        wiki_manager=c.resolve("WikiManager"),
     ), life_cycle="singleton")
 
     # App根对象

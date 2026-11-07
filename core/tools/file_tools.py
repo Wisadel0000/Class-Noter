@@ -1,6 +1,8 @@
 from pathlib import Path
 import os
 
+from core.tools.ToolsManager import ToolsManager
+
 path = "./note_dir"
 ROOT_DIR = Path(path).resolve()
 
@@ -220,3 +222,9 @@ tool_set = [("move_md_file",move_md_file,
              (e.g., 'old.md' -> 'new.md'). The file stays in the same directory.
              """),
             ]
+
+def file_tools_register(tools_manager:ToolsManager):
+    for name, call_able, description in tool_set:
+        tools_manager.register(name, call_able, description)
+    tools_manager.tool_set_register("noting_tools", [tool[0] for tool in tool_set])
+    tools_manager.tool_set_register("default", [])

@@ -12,14 +12,13 @@ _model_provider_set = {m.value for m in ModelProvider} # 此乃集合推导式�
 #设置类
 @dataclass(frozen=True)
 class ProviderSetting:
-    # 基本配置项定义
+    # 基本大模型配置
     model_provider: ModelProvider = ModelProvider.web_api
     web_model:str = "deepseek-flash"
     web_api_key:str = os.getenv("WEB_API_KEY")
     web_base_url:str = "https://api.deepseek.com"
 
     ollama_model:str = "qwen3.5:9b"
-    # 未来最好更新一个配置&保存多个提供商实例的功能，大概需要单独搞一个本地化功能罢，大概会写在LLMRouter里
 
     #如果默认（备用）提供商选择了ollama，就不使用apiKey，但是如果选择了web提供商的话还是需要保存一个apiKey的
     default_model_provider: ModelProvider = ModelProvider.web_api
@@ -28,6 +27,9 @@ class ProviderSetting:
     default_api_key:str = os.getenv("DEFAULT_API_KEY")
 
     default_ollama_model:str = "qwen3.5:9b"
+
+    # web_search配置
+    deepseek_web_search_api:str = os.getenv("DS_WEB_SEARCH_API_KEY")
 
     # from_dict, 从字典创建Settings，如果是空字典（每个字段在核对时都返回None，即不对default对象进行修改）就用默认值
     @classmethod
@@ -96,6 +98,11 @@ class ProviderSetting:
         if not isinstance(default_ollama_model, str):
             default_ollama_model = default.default_ollama_model
 
+        # deepseek_web_search_api
+        deepseek_web_search_api = raw.get("deepseek_web_search_api")
+        if not isinstance(deepseek_web_search_api, str):
+            deepseek_web_search_api = default.deepseek_web_search_api
+
         # 组装
         return cls(
             model_provider=model_provider,
@@ -108,6 +115,7 @@ class ProviderSetting:
             default_api_key=default_api_key,
             default_base_url=default_base_url,
             default_ollama_model=default_ollama_model,
+            deepseek_web_search_api=deepseek_web_search_api,
         )
 
     # to_dict

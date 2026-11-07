@@ -1,5 +1,4 @@
 from di_container import DIContainer
-
 from core.wiki.manager import WikiManager
 
 def wiki_manager_init(c: DIContainer):

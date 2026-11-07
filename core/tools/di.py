@@ -1,16 +1,12 @@
 from di_container import DIContainer
 
 from core.tools.ToolsManager import ToolsManager
-import core.tools.file_tools as ft
+from core.tools.web_search_tools import WebSearchTools
 
 
 def tools_manager_init(c: DIContainer):
     """组装工具管理器，顺手初始化注册一些无模块工具"""
     tools_manager = ToolsManager()
-    # file_tools
-    for name,call_able,description in ft.tool_set:
-        tools_manager.register(name,call_able,description)
-    tools_manager.tool_set_register("noting_tools", [tool[0] for tool in ft.tool_set])
-    # default
-    tools_manager.tool_set_register("default",[])
+    # 工具注册
+    WebSearchTools(tools_manager=tools_manager,setting_store=c.resolve("SettingStore"))
     return tools_manager

@@ -1,6 +1,6 @@
-from event.event_core import Bus,Loop,Router,Event
+from event.event_core import Bus,Loop,Router
 from event.events import UserMessage, TaskMessage, MessageToUser, AskForWorkStateReport, WorkStateReport, AppStart, AppClose
-from router.provider import LLMRouter
+from settings.routers.provider import ProviderRouter
 from core.tools.ToolsManager import ToolsManager
 
 from langchain.agents import create_agent
@@ -12,7 +12,7 @@ import threading
 
 
 class FrontAgentModule:
-    def __init__(self,core_bus_router:Router,core_loop:Loop,local_bus:Bus,local_loop:Loop,provider_router: LLMRouter,tools_manager:ToolsManager):
+    def __init__(self, core_bus_router:Router, core_loop:Loop, local_bus:Bus, local_loop:Loop, provider_router: ProviderRouter, tools_manager:ToolsManager):
         self._core_loop = core_loop
         self._local_bus = local_bus
         self._local_loop = local_loop
@@ -46,12 +46,14 @@ class FrontAgentModule:
     # 记得未来搭配隔壁项目的动态中间件模块实现工具热拉取（记得警告用户在运行时临时修改工具列表可能会导致kv缓存命中率大幅受损 ）
     def _agent_compile(self):
         agent = create_agent(
-            model=self._provider_router.get_default(),
-            tools=self._tools_manager.get_tool_set("front_agent"),
-            system_prompt="""你是一个课堂助手，负责和用户探讨与学习相关的内容。
-                              在后台有一个笔记agent负责根据课堂内容整理结构化的笔记文件库。
+            model=self._provider_router.get_default_model(),
+            tools=self._tools_manager.get_tool_set_by_list(["front_agent","web_search_tools"]),
+            system_prompt="""你是一个学习助手，负责和用户探讨与学习相关的内容。
+                              在后台有一个笔记agent负责在上课时根据课堂内容整理结构化的笔记文件库，或根据你的命令完成对应的笔记任务，
                               如果用户有对笔记进行修改的需求，你可以调用工具给后台笔记agent下达任务命令（用自然语言描述任务要求）。
-                              如果用户需要询问后台工作进度，也有对应工具可以调用，调用后，后台会在整理好工作进度汇报之后向你回信，接到回信后请向用户汇报结果""",
+                              如果用户需要询问后台工作进度，也有对应工具可以调用，调用后，后台会在整理好工作进度汇报之后向你回信，接到回信后请向用户汇报结果
+                              如果用户的问题/困惑涉及需要严谨回答的专业知识，你可以使用联网搜索功能查询相关信息，以提高你提供的解答的准确性和最新性。
+                              """,
             checkpointer=InMemorySaver()
         )
         return agent
@@ -65,7 +67,7 @@ class FrontAgentModule:
         self._post_message_to_mail(message)
     # 收到工作日志汇报
     def receive_work_state_report(self, event: WorkStateReport):
-        message = ChatMessage(content=event.content,role="后台工作进度汇报")    #创建消息
+        message = ChatMessage(content=event.content,role="user",name="后台工作进度汇报")    #创建消息
         self._post_message_to_mail(message)
 
     # ------ Agent消息投递与回信 ------
@@ -96,7 +98,7 @@ class FrontAgentModule:
             logger.debug(f"前台向用户发送消息：{self._messages['messages'][-1].content}")
             self._core_loop.post(MessageToUser(self._messages["messages"][-1].content))
 
-    # ------ 给agent用的工具 ------
+    # ------ 给agent用的工具（通过发布事件） ------
     def set_custom_task(self,task_message:str):
         """用于给后台的笔记Agent发送自然语言描述的命令"""
         self._core_loop.post(TaskMessage(content=task_message))

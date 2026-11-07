@@ -1,5 +1,5 @@
 """这个文件负责编写Agent的具体业务代码和构建逻辑"""
-from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage, ChatMessage
+from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import StateGraph, START
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
@@ -10,7 +10,7 @@ from datetime import date
 from core.background_agent.BaseTask import AgentTask, MultiTask
 from core.background_agent.graphs_manager import GraphBlockManager, GraphTaskManager
 from core.tools.ToolsManager import ToolsManager
-from router.provider import LLMRouter
+from settings.routers.provider import ProviderRouter
 from event.event_core import Bus, Loop
 from core.background_agent._event import AgentLog,TaskStartLog,TaskOverLog
 
@@ -24,7 +24,7 @@ class MessageState(TypedDict):
 
 class BackgroundAgent:
 
-    def __init__(self,local_bus:Bus ,local_loop:Loop,provider_router: LLMRouter ,tools_manager: ToolsManager,graph_block_manager:GraphBlockManager, graph_task_manager:GraphTaskManager):
+    def __init__(self, local_bus:Bus, local_loop:Loop, provider_router: ProviderRouter, tools_manager: ToolsManager, graph_block_manager:GraphBlockManager, graph_task_manager:GraphTaskManager):
         self._provider_router = provider_router
         self._tools_manager = tools_manager
         self._block_manager = graph_block_manager
@@ -53,7 +53,7 @@ class BackgroundAgent:
     def get_llm_invoke(self):
         """获取一个直接调用LLM模型的方法"""
         # TODO这是坏设计，至少目前我认为把模型暴露给core逻辑是不对的，应该整合一下各个任务不同的提示词拼装逻辑，在那里提供llm调用
-        model = self._provider_router.route()
+        model = self._provider_router.model_route()
         return model.invoke
 
     # agent节点
@@ -63,7 +63,7 @@ class BackgroundAgent:
         """
         now_date = f"今日日期为：{date.today().isoformat()}\n"
 
-        model  = self._provider_router.route()
+        model  = self._provider_router.model_route()
 
         # 提示词获取与构建
         system_prompt = now_date + self._now_task.task_prompt

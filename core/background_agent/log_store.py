@@ -10,16 +10,16 @@ import threading
 from loguru import logger
 from time import sleep
 from queue import Queue
-from langchain_core.messages import SystemMessage,HumanMessage, ChatMessage
+from langchain_core.messages import SystemMessage, ChatMessage
 
 from core.background_agent._event import AgentLog,TaskOverLog,TaskStartLog
 from core.tools.ToolsManager import ToolsManager
 from event.event_core import Bus,Loop,Router,Event
 from event.events import AppStart, TaskLogUpdate, AskForWorkStateReport, WorkStateReport
-from router.provider import LLMRouter
+from settings.routers.provider import ProviderRouter
 
 class LogStore:
-    def __init__(self,core_bus_router:Router,core_loop:Loop,local_bus:Bus,local_loop:Loop,provider_router:LLMRouter,tools_manager:ToolsManager):
+    def __init__(self, core_bus_router:Router, core_loop:Loop, local_bus:Bus, local_loop:Loop, provider_router:ProviderRouter, tools_manager:ToolsManager):
         self._core_loop:Loop = core_loop
         self._local_bus:Bus = local_bus
         self._local_loop:Loop = local_loop
@@ -88,14 +88,15 @@ class LogStore:
 
     def work_state_report(self,event:AskForWorkStateReport):
         """用于向GUI回信报告当前工作状态"""
-        model = self._provider_router.route()
+        model = self._provider_router.model_route()
         system_prompt = """
         你是一个日志汇报员，你负责根据后台agent的工作日志给前台agent汇报其咨询的工作进展详情。
         你应该直接生成回答的具体内容，且简洁干练，切中问题要点。
         如果前台问你“当前进度到哪儿了”或者让你“汇报最近进展”，则不用观察工具调用信息，直接根据agent输出的计划内容和最后一轮的工作进度来回答。
+        如果日志为空，则 如实回答“当前无正在进行的任务”
         """
         request = f"目前全部后台工作日志：\n{"\n".join(self._now_messages)}" + f"前台咨询内容:{event.content}"
-        result = model.invoke([SystemMessage(system_prompt),ChatMessage(content= request,role="前台Agent")])
+        result = model.invoke([SystemMessage(system_prompt),ChatMessage(content= request,role="user",name="前台Agent")])
 
         logger.debug(f"工作日志报告输出：{result}")
 

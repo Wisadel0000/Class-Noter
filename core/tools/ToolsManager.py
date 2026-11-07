@@ -74,3 +74,12 @@ class ToolsManager:
         if name_set is None:raise ValueError(f"工具集名 {set_name} 未注册")
         tools = map(self.get_tool_by_name, name_set)
         return list(tools)
+
+    def get_tool_set_by_list(self,set_names: list[str]) -> list:
+        name_set = set()    # 用集合去重
+        for set_name in set_names:
+            _ = self._tool_sets.get(set_name)
+            if _ is None: raise ValueError(f"工具集名 {set_name} 未注册")
+            name_set.update(_)
+        tools = map(self.get_tool_by_name, name_set)
+        return list(tools)

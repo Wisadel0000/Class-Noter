@@ -2,21 +2,23 @@
 import flet as ft
 import threading
 import asyncio
+import json
+from pathlib import Path
 from typing import Callable
 from loguru import logger
+from flet_webview_all import FletWebviewAll
 
+from core.wiki.manager import WikiManager
 from event.event_core import Bus,Loop,Router
 from event.events import MessageToUser, UserMessage, AppStart, NotingStart, NotingStop, NotingAlready, TaskLogUpdate
 
 
-
-
 class GuiModule:
-
-    def __init__(self, core_bus_router:Router,core_loop:Loop,local_bus:Bus,local_loop:Loop):
+    def __init__(self, core_bus_router:Router,core_loop:Loop,local_bus:Bus,local_loop:Loop,wiki_manager:WikiManager):
         self._core_loop = core_loop
         self._local_bus = local_bus
         self._local_loop = local_loop
+        self._wiki_manager = wiki_manager
         self._chat_history: list[dict] = []
         # 笔记是否正在进行的唯一真源，界面重新挂载时据此恢复按钮状态
         self._noting = False
@@ -53,8 +55,8 @@ class GuiModule:
         page.title = "课堂助手"
         page.window.title_bar_hidden = True
         page.theme_mode = ft.ThemeMode.LIGHT
-        page.window.width = 432
-        page.window.height = 768
+        page.window.width = 500     #432 (360x1.2)
+        page.window.height = 800    #768 (640x1.2)
         #最大最小窗口尺寸
         page.window.min_width = 360
         page.window.min_height = 640
@@ -72,6 +74,8 @@ class GuiModule:
             if idx == 0:
                 ft.context.page.navigate("/talk")
             elif idx == 1:
+                ft.context.page.navigate("/a")
+            elif idx == 2:
                 ft.context.page.navigate("/config")
             await page.close_drawer()
 
@@ -115,6 +119,11 @@ class GuiModule:
                     icon=ft.Icons.CHAT_OUTLINED,
                     selected_icon=ft.Icons.CHAT,
                 ),
+                ft.NavigationDrawerDestination(
+                    label="我的wiki",
+                    icon=ft.Icons.ARTICLE_OUTLINED,
+                    selected_icon=ft.Icons.ARTICLE,
+                ),
                 ft.Divider(thickness=2),
                 ft.NavigationDrawerDestination(
                     label="选项",
@@ -136,6 +145,7 @@ class GuiModule:
             return ft.Router([
                 ft.Route(index=True, component=root_page),
                 ft.Route(path="/talk", component=talk_page),
+                ft.Route(path="/a", component=page_a),
                 #TODO：ft.Route(path="/config", component=config_page),  #不许删除这一行
             ])
 
@@ -143,6 +153,61 @@ class GuiModule:
         @ft.component
         def root_page():
             return ft.Text("这是占位根目录，请访问/talk")
+
+        # ── A 页面（内置浏览器：wiki 库首页） ──
+        @ft.component
+        def page_a():
+            # 相对路径不能直接转 URI，先 resolve 成绝对路径
+            index_path = (Path(self._wiki_manager.get_wiki_path()) / "index.html").resolve()
+            webview = FletWebviewAll(
+                url=index_path.as_uri(),
+                allow_navigation=True,  # 允许点击页面内部的链接继续跳转
+                expand=True,
+            )
+
+            async def go_home(e):
+                # 改 url 属性只有在值变化时才会触发加载，页内跳转后 Python 侧 url 没变，
+                # 所以直接用 JS 跳回首页
+                await webview.run_javascript(
+                    f"window.location.href = {json.dumps(index_path.as_uri())};"
+                )
+
+            async def reload_page(e):
+                await webview.reload()
+
+            async def go_back(e):
+                if await webview.can_go_back():
+                    await webview.go_back()
+
+            return ft.Container(
+                content=ft.Column(
+                    [
+                        # 窗口标题栏被隐藏了，这里同样保留菜单按钮和拖动区域
+                        ft.WindowDragArea(
+                            content=ft.Container(
+                                content=ft.Row(
+                                    [
+                                        ft.Row(
+                                            [
+                                                ft.IconButton(icon=ft.Icons.MENU, on_click=handle_show_drawer),
+                                                ft.IconButton(icon=ft.Icons.HOME, tooltip="回到首页", on_click=go_home),
+                                                ft.IconButton(icon=ft.Icons.REFRESH, tooltip="刷新", on_click=reload_page),
+                                            ],
+                                            spacing=0,
+                                        ),
+                                        ft.IconButton(icon=ft.Icons.ARROW_BACK, tooltip="返回", on_click=go_back),
+                                    ],
+                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                ),
+                                padding=5,
+                            ),
+                        ),
+                        webview,
+                    ],
+                    spacing=0,
+                ),
+                expand=True,
+            )
 
         # ── 聊天页面 ──
         @ft.component
@@ -181,7 +246,19 @@ class GuiModule:
                     [
                         ft.Text("你" if m["is_user"] else "助手", size=14, weight=ft.FontWeight.W_400, color=ft.Colors.GREY_600),
                         ft.Container(
-                            content=ft.Text(m["text"],size=16, weight=ft.FontWeight.W_400, selectable=True),
+                            content=(
+                                ft.Text(m["text"], size=16, weight=ft.FontWeight.W_400, selectable=True)
+                                if m["is_user"]
+                                else ft.Markdown(
+                                    m["text"],
+                                    selectable=True,
+                                    extension_set=ft.MarkdownExtensionSet.GITHUB_FLAVORED,
+                                    code_theme=ft.MarkdownCodeTheme.GITHUB,
+                                    md_style_sheet=ft.MarkdownStyleSheet(
+                                        p_text_style=ft.TextStyle(size=16),
+                                    ),
+                                )
+                            ),
                             padding=12,
                             bgcolor=ft.Colors.GREY_200 if m["is_user"] else ft.Colors.TRANSPARENT,
                             border_radius=10,
@@ -236,7 +313,7 @@ class GuiModule:
                             content=ft.Container(
                                 content=ft.Row(
                                     [ft.IconButton(icon=ft.Icons.MENU, on_click=handle_show_drawer),
-                                     ft.ElevatedButton(
+                                     ft.Button(
                                          "停止笔记" if noting else "开始笔记",
                                          icon=ft.Icons.STOP_ROUNDED if noting else ft.Icons.PLAY_ARROW,
                                          bgcolor=(ft.Colors.GREY_200 if not agent_ready
@@ -377,6 +454,6 @@ class GuiModule:
 
     def gui_start(self,):
         # 给主线程用的
-        ft.app(self.main)
+        ft.run(self.main)
 
 

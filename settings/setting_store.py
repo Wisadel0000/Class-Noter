@@ -96,7 +96,7 @@ class SettingStore:
     def get(self, namespace: str):
         """获取namespace对应的设置实例"""
         if namespace not in self._sections:
-            raise KeyError(f"{namespace}不是被注册过的命名空间！")
+            raise KeyError(f"尝试获取未注册的配置命名空间{namespace}失败！")
         return self._current[namespace]
 
     def update(self, namespace: str, patch: dict) -> None:
