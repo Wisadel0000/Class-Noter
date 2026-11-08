@@ -76,8 +76,9 @@ class LogStore:
             # 尝试获取工具的日志方法
             tool_calls = []
             for call in event.tool_calls:
-                log_func = self._tools_manager.get_log_func_by_name(call["name"])
-                if log_func:
+                call_names = call.get("name")
+                if call_names:
+                    log_func = self._tools_manager.get_log_func_by_name(call_names)
                     content = f"调用了工具:{call["name"]},调用详情:{log_func(**call["args"])}"
                 else:
                     content = f"调用了工具 :{call['name']}"  # 没有日志方法就只会显示名字，不利于大模型阅读，不建议这么做，最好还是写一个对应的日志工具

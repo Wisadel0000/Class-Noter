@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Callable
 from loguru import logger
 from flet_webview_all import FletWebviewAll
-from modelscope.utils.nlp.space.utils import max_lens
 
 from core.wiki.manager import WikiManager
 from event.event_core import Bus,Loop,Router
