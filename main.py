@@ -108,6 +108,7 @@ def main():
         local_bus=c.resolve("Gui_Bus"),
         local_loop=c.resolve("Gui_Loop"),
         wiki_manager=c.resolve("WikiManager"),
+        setting_store=c.resolve("SettingStore"),
     ), life_cycle="singleton")
 
     # App根对象

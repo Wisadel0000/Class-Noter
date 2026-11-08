@@ -114,7 +114,7 @@ class WikiManager:
 
     # ------ 消息响应 ------
 
-    def when_app_close(self):
+    def when_app_close(self,event:AppClose):
         self._thread_pool.shutdown()
         self._thread_pool_over.set()
 

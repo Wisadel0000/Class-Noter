@@ -11,14 +11,17 @@ from flet_webview_all import FletWebviewAll
 from core.wiki.manager import WikiManager
 from event.event_core import Bus,Loop,Router
 from event.events import MessageToUser, UserMessage, AppStart, NotingStart, NotingStop, NotingAlready, TaskLogUpdate, WikiUpdate
+from settings.provider_setting import ProviderSetting
+from settings.setting_store import SettingStore
 
 
 class GuiModule:
-    def __init__(self, core_bus_router:Router,core_loop:Loop,local_bus:Bus,local_loop:Loop,wiki_manager:WikiManager):
+    def __init__(self, core_bus_router:Router,core_loop:Loop,local_bus:Bus,local_loop:Loop,wiki_manager:WikiManager,setting_store:SettingStore):
         self._core_loop = core_loop
         self._local_bus = local_bus
         self._local_loop = local_loop
         self._wiki_manager = wiki_manager
+        self._setting_store = setting_store
         self._chat_history: list[dict] = []
         # 笔记是否正在进行的唯一真源，界面重新挂载时据此恢复按钮状态
         self._noting = False
@@ -81,7 +84,7 @@ class GuiModule:
             if idx == 0:
                 ft.context.page.navigate("/talk")
             elif idx == 1:
-                ft.context.page.navigate("/a")
+                ft.context.page.navigate("/wiki")
             elif idx == 2:
                 ft.context.page.navigate("/config")
             await page.close_drawer()
@@ -152,8 +155,8 @@ class GuiModule:
             return ft.Router([
                 ft.Route(index=True, component=root_page),
                 ft.Route(path="/talk", component=talk_page),
-                ft.Route(path="/a", component=wiki_page),
-                #TODO：ft.Route(path="/config", component=config_page),  #不许删除这一行
+                ft.Route(path="/wiki", component=wiki_page),
+                ft.Route(path="/config", component=config_page),
             ])
 
         # ── 根目录 ──
@@ -392,37 +395,48 @@ class GuiModule:
             )
 
         # ── 配置页面 ──    #TODO配置页暂时先不做了，但是代码先留在这儿
-        # @ft.component
-        # def config_page():
-        #     model_name, set_model_name = ft.use_state(config.get_value("LLM_MODEL"))
-        #     api_key, set_api_key = ft.use_state(config.get_value("LLM_API_KEY"))
-        #     base_url, set_base_url = ft.use_state(config.get_value("LLM_BASE_URL"))
-        #     note_path, set_note_path = ft.use_state(config.get_value("NOTE_ROOT_PATH"))
-        #
-        #     def save_config(e):
-        #         config.save_model_config(
-        #             model=model_name,
-        #             api_key=api_key,
-        #             base_url=base_url,
-        #             note_path=note_path,
-        #         )
-        #
-        #     return ft.Container(
-        #         content=ft.Column([
-        #             ft.IconButton(icon=ft.Icons.MENU, on_click=handle_show_drawer),
-        #             ft.Divider(),
-        #             ft.Row([ft.Text("模型名："),
-        #                     ft.TextField(value=model_name, on_change=lambda e: set_model_name(e.control.value))]),
-        #             ft.Row([ft.Text("API密钥："), ft.TextField(value=api_key, password=True, can_reveal_password=True,
-        #                                                       on_change=lambda e: set_api_key(e.control.value))]),
-        #             ft.Row([ft.Text("BaseURL："),
-        #                     ft.TextField(value=base_url, on_change=lambda e: set_base_url(e.control.value))]),
-        #             ft.Row([ft.Text("笔记保存根目录："),
-        #                     ft.TextField(value=note_path, on_change=lambda e: set_note_path(e.control.value))]),
-        #             ft.Row([ft.FilledButton("保存更改", icon=ft.Icons.SAVE, on_click=save_config)]),
-        #         ]),
-        #         expand=True,
-        #     )
+        @ft.component
+        def config_page():
+            provider_setting: ProviderSetting = self._setting_store.get("provider_setting")
+            wiki_setting = self._setting_store.get("wiki_setting")
+            # provider
+            web_model, set_web_model = ft.use_state(provider_setting.web_model)
+            web_api_key, set_web_api_key = ft.use_state(provider_setting.web_api_key)
+            web_base_url, set_web_base_url = ft.use_state(provider_setting.web_base_url)
+
+            # wiki
+            site_name, set_site_name = ft.use_state(wiki_setting.site_name)
+
+            def save_settings(e):
+                self._setting_store.update("provider_setting",
+                                           {
+                                               "web_model":web_model,
+                                               "web_api_key":web_api_key,
+                                               "web_base_url":web_base_url,
+                                           })
+                self._setting_store.update("wiki_setting",
+                                           {
+                                               "site_name": site_name,
+                                           })
+
+            return ft.Container(
+                content=ft.Column([
+                    ft.IconButton(icon=ft.Icons.MENU, on_click=handle_show_drawer),
+                    ft.Divider(),
+                    ft.Row([ft.Text("模型名："),
+                            ft.TextField(value=web_model, on_change=lambda e: set_web_model(e.control.value))]),
+                    ft.Row([ft.Text("API密钥："), ft.TextField(value=web_api_key, password=True, can_reveal_password=True,
+                                                              on_change=lambda e: set_web_api_key(e.control.value))]),
+                    ft.Row([ft.Text("BaseURL："),
+                            ft.TextField(value=web_base_url, on_change=lambda e: set_web_base_url(e.control.value))]),
+                    ft.Divider(),
+                    ft.Row([ft.Text("wiki标题："),
+                            ft.TextField(value=site_name, on_change=lambda e: set_site_name(e.control.value))]),
+                    ft.Row([ft.FilledButton("保存更改", icon=ft.Icons.SAVE, on_click=save_settings)]),
+                ]),
+                expand=True,
+            )
+
 
         page.render(rootPage)
         page.navigate("/talk")
@@ -493,7 +507,6 @@ class GuiModule:
 
     def set_exit_func(self, func: Callable):
         """用于传入关闭后台BusLoop的命令"""
-        # 真得这么写吗？
         self._close_backend = func
 
     def gui_start(self,):
