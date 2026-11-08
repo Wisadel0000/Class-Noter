@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 from loguru import logger
 from flet_webview_all import FletWebviewAll
+from modelscope.utils.nlp.space.utils import max_lens
 
 from core.wiki.manager import WikiManager
 from event.event_core import Bus,Loop,Router
@@ -28,6 +29,8 @@ class GuiModule:
         self._task_log: dict = {"now_task": None, "content": ""}
         # wiki 是否有未刷新的改动，wiki 页面据此显示刷新角标
         self._wiki_dirty = False
+        # 输入框里尚未发送的内容，切换页面后重新挂载时据此恢复
+        self._input_text = ""
 
         # 界面跑起来后由 main / talk_page 填上的引用
         self._page: ft.Page | None = None
@@ -235,7 +238,7 @@ class GuiModule:
             messages, set_messages = ft.use_state(self._snapshot_chat())
             # 让总线回调在任意线程都能拿到当前页面的状态更新函数
             self._set_messages = set_messages
-            input_text, set_input_text = ft.use_state("")
+            input_text, set_input_text = ft.use_state(self._input_text)
             noting, set_noting = ft.use_state(self._noting)
             agent_ready, set_agent_ready = ft.use_state(self._agent_ready)
             self._set_agent_ready = set_agent_ready
@@ -251,6 +254,11 @@ class GuiModule:
                     self._noting = True
                 set_noting(self._noting)
 
+            def handle_input_change(e):
+                # 同步到实例字段，离开页面后重新挂载时还能恢复
+                self._input_text = e.control.value
+                set_input_text(e.control.value)
+
             def send_message(e):
                 text = input_text.strip()
                 if not text:
@@ -259,6 +267,7 @@ class GuiModule:
                 # 助手的回复会在 MessageToUser 到达时由 receive_message 追加
                 self._append_chat({"text": text, "is_user": True})
                 self._core_loop.post(UserMessage(text))
+                self._input_text = ""
                 set_input_text("")
 
             def build_bubble(m: dict):
@@ -320,8 +329,11 @@ class GuiModule:
                 hint_text="输入消息...",
                 expand=True,
                 border_radius=8,
+                multiline=True,
+                shift_enter=True,
+                max_lines=5,
                 value=input_text,
-                on_change=lambda e: set_input_text(e.control.value),
+                on_change=handle_input_change,
                 on_submit=send_message,
             )
 
