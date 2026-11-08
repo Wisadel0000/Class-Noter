@@ -10,24 +10,21 @@ __pycache__/
 .env
 
 # ASR 模型文件（大体积二进制）
-core/asr/asr_models/paraformer-zh/
-core/asr/asr_models/ct-punc/
+core/reporter/asr_models/paraformer-zh/
+core/reporter/asr_models/ct-punc/
 
-# 日志
-agent.log
-*.log
+# 构建物
+build/
+setting.json
+# 笔记生成结果
+note/
 
-# 生成的笔记数据
-_legacy/old_stores/wiki
-
-# 测试记录和输出
-Test_record/
-
-# 旧代码
-_legacy
+# 旧代码和日志/生成物
+_legacy/
 
 # 临时目录
 ______/
+test_gui.py
 
 # IDE - PyCharm
 .idea/

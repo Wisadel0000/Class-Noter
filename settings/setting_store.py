@@ -103,7 +103,6 @@ class SettingStore:
         """
         给namespace对应的的设置进行修改
         修改的新内容以字典的形式传入，必须是明文字典，适配 from_dict(raw)方法
-
         修改完成后当前线程将会逐一通知所有的订阅者
         """
         if namespace not in self._sections:

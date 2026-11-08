@@ -53,6 +53,7 @@ class WikiManager:
         self._local_loop.register_stop_waiting_event(self._thread_pool_over)
 
         # ------ 注册回调 ------
+        self._local_bus.subscribe(AppClose,self.when_app_close)
         self._local_bus.subscribe(WikiEditFinish,self.export_local_site)
 
         # ------ 订阅总线事件 ------
@@ -113,13 +114,13 @@ class WikiManager:
 
     # ------ 消息响应 ------
 
-    def when_app_close(self):
+    def when_app_close(self,event:AppClose):
         self._thread_pool.shutdown()
         self._thread_pool_over.set()
 
     def export_local_site(self,event: WikiEditFinish):
         self._thread_pool.submit(self._all_export)  # TODO现在每次保存全库效率有点低下了，记得更新下wiki工具添加新功能
-        self._core_loop.post(WikiUpdate())
+        # 方法内含有一次WikiUpDate事件发布
 
     # ------ 方法 ------
 
@@ -130,6 +131,7 @@ class WikiManager:
                         out_dir = self._setting.out_path,
                         site_name=self._setting.site_name
                         )
+            self._core_loop.post(WikiUpdate())
 
     def _single_export(self,slug: str):
         """单页导出，渲染导出某一个单独的页面，

@@ -105,21 +105,24 @@ query 中的搜索语法会原样传递给搜索服务。下表中的示例将�
 """
 
     def _deepseek_web_search(self, query, api_key):
-        response = requests.post(
-            "https://api.deepseek.com/v1/tools/search",
-            headers={
-                f"Authorization": f"Bearer {api_key}",
-            },
-            json={
-                "query": f"{query}",
-                "count": 10,  # 默认搜索10个网页
-                "need_content": False,  # 不返回结果，等待ai主动Fetch抓取
-            }
-        )
         try:
+            response = requests.post(
+                "https://api.deepseek.com/v1/tools/search",
+                headers={
+                    f"Authorization": f"Bearer {api_key}",
+                },
+                json={
+                    "query": f"{query}",
+                    "count": 10,  # 默认搜索10个网页
+                    "need_content": False,  # 不返回结果，等待ai主动Fetch抓取
+                },
+                timeout=60,
+            )
             response.raise_for_status()
         except requests.exceptions.HTTPError:
             return "网络请求时出现问题，搜索失败"
+        except requests.exceptions.Timeout:
+            return "网络请求超时，抓取失败"
         build_result = []
         for result in response.json()["results"]:
             self._page_cache[result["url"]] = result    #缓存结果
@@ -136,17 +139,20 @@ url:{result["url"]}
         return str(build_result)
 
     def _deepseek_web_fetch(self, url, api_key):
-        response = requests.post(
-            "https://api.deepseek.com/v1/tools/fetch",
-            headers={
-                f"Authorization": f"Bearer {api_key}",
-            },
-            json={"url": f"{url}"},
-        )
         try:
+            response = requests.post(
+                "https://api.deepseek.com/v1/tools/fetch",
+                headers={
+                    f"Authorization": f"Bearer {api_key}",
+                },
+                json={"url": f"{url}"},
+                timeout=60,
+            )
             response.raise_for_status()
         except requests.exceptions.HTTPError:
             return "网络请求时出现问题，抓取失败"
+        except requests.exceptions.Timeout:
+            return "网络请求超时，抓取失败"
         page = response.json()
         content_result = f"""
 标题：{page["title"]}
