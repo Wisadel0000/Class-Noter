@@ -79,7 +79,9 @@ def main():
     # ToolsManager
     container.register("ToolsManager",tools_manager_init,life_cycle="singleton")
 
-    # WikiManager (这东西其实不算核心逻辑 ，只是提供工具，根本就没拼起来，所有我觉得应该算设置层
+    # WikiManager
+    container.register("Wiki_Bus",lambda c: Bus(),life_cycle="singleton")
+    container.register("Wiki_Loop",lambda c: Loop(c.resolve("Wiki_Bus")),life_cycle="singleton")
     container.register("WikiManager",wiki_manager_init,life_cycle="singleton")
 
     # FrontModule
@@ -115,8 +117,9 @@ def main():
         setting_store=c.resolve("SettingStore"),
         gui=c.resolve("Gui_Module"),
         models_loops=[
-                      c.resolve("Background_Loop"),
+                      c.resolve("Wiki_Loop"),
                       c.resolve("Front_Loop"),
+                      c.resolve("Background_Loop"),
                       c.resolve("Reporter_Loop"),
                       c.resolve("Gui_Loop"),
                       ],

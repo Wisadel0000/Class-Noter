@@ -136,7 +136,7 @@ def _infobox_html(
     md,
     env: dict,
     *,
-    tag_href: Callable[[str], str] | None,
+    tag_href: Callable[[str], str | None] | None,
 ) -> str:
     rows: list[str] = []
     for item in _infobox_fields(page):
@@ -163,12 +163,14 @@ def _infobox_html(
     )
 
 
-def _tag_chip(tag: str, tag_href: Callable[[str], str] | None) -> str:
+def _tag_chip(tag: str, tag_href: Callable[[str], str | None] | None) -> str:
     label = escape(tag if tag.startswith("#") else f"#{tag}")
     if tag_href is None:
         return f'<span class="tag">{label}</span>'
-    href = escape(tag_href(tag), quote=True)
-    return f'<a class="tag" href="{href}">{label}</a>'
+    href = tag_href(tag)
+    if href is None:  # 对应的标签页不存在 → 渲染成不可点的 span
+        return f'<span class="tag">{label}</span>'
+    return f'<a class="tag" href="{escape(href, quote=True)}">{label}</a>'
 
 
 def _build_toc(nodes: list[dict], depth: int) -> str:
@@ -359,7 +361,7 @@ def render_page(
     backlinks: Sequence[tuple[str, str]] = (),
     toc_depth: int = 3,
     toc: bool = True,
-    tag_href: Callable[[str], str] | None = None,
+    tag_href: Callable[[str], str | None] | None = None,
     template: str = "page.html",
     css_href: str | None = "assets/style.css",
     css_inline: str | None = None,

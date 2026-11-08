@@ -54,6 +54,67 @@ def _timestamp() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
 
+def export_page(
+    store,
+    slug: str,
+    out_dir: str | Path,
+    *,
+    with_related: bool = False,
+    site_name: str = "",
+    mathjax: bool = False,
+    toc_depth: int = 3,
+    index: WikiIndex | None = None,
+) -> ExportResult:
+    """只导出**一个**页面（可选带上它的出链与反链页面），不重建整站。
+
+    ``with_related=True`` 时额外导出：这页引用到的页面（一跳）＋引用这页的页面（反链）。
+    这样导出的 HTML 里的链接至少一跳之内不会 404。
+    注意：单页导出不生成标签页，所以标签渲染成不可点的 ``.tag`` span。
+    """
+    wiki = index or WikiIndex(store)
+    page = store.load(slug)
+
+    targets: list[str] = [slug]
+    if with_related:
+        for link in page.links():
+            resolved = wiki.resolve(link.target)
+            if resolved is not None and resolved not in targets:
+                targets.append(resolved)
+        for source in wiki.backlinks(slug):
+            if source not in targets:
+                targets.append(source)
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    assets = out / "assets"
+    assets.mkdir(exist_ok=True)
+    css = assets / "style.css"
+    shutil.copyfile(ASSETS_DIR / "style.css", css)
+
+    result = ExportResult(out_dir=out, css=css)
+
+    def tag_href(tag: str) -> str | None:
+        """只有输出目录里真的存在该标签页时，才把标签做成链接。"""
+        name = f"tag-{slugify_title(tag)}.html"
+        return name if (out / name).is_file() else None
+
+    for target in targets:
+        rendered = render_page(
+            store.load(target),
+            resolver=wiki.resolver,
+            backlinks=wiki.backlink_pairs(target),
+            toc_depth=toc_depth,
+            tag_href=tag_href,
+            css_href="assets/style.css",
+            site_name=site_name,
+            mathjax=mathjax,
+        )
+        path = out / f"{target}.html"
+        path.write_text(rendered.full_html, encoding="utf-8")
+        result.pages.append(path)
+    return result
+
+
 def export_site(
     store,
     out_dir: str | Path,

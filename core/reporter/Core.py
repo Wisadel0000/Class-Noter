@@ -42,7 +42,7 @@ class AsrModule:
         self._text_total = ""  # 留档（以防万一用到了全部的）
         self.model: AutoModel | None = None
 
-        # ------ 注册结束时等待事件 ------
+        # ------ 关闭时阻塞事件 ------
         # self._local_loop.register_stop_waiting_event(self._asr_idle)    #不等待
 
         # ------ 注册回调函数 ------

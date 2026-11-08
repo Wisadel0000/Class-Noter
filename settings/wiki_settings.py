@@ -6,6 +6,7 @@ class WikiSetting:
     # 基本配置项定义
     raw_path: str = "note/raw"
     out_path: str = "note/wiki"
+    site_name: str = "WIKI笔记库"
 
     # from_dict, 从字典创建Settings，如果是空字典（每个字段在核对时都返回None，即不对default对象进行修改）就用默认值
     @classmethod
@@ -24,10 +25,16 @@ class WikiSetting:
         if not isinstance(out_path, str):
             out_path = default.out_path
 
+        # site_name
+        site_name = raw.get("site_name")
+        if not isinstance(site_name, str):
+            site_name = default.site_name
+
         # 组装
         return cls(
             raw_path=raw_path,
             out_path=out_path,
+            site_name=site_name,
         )
 
     # to_dict

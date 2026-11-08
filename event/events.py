@@ -62,3 +62,11 @@ class AskForWorkStateReport(Event):
 @dataclass
 class WorkStateReport(Event):
     content: str
+
+@dataclass
+class WikiEditFinish(Event):    #提示wiki这时候应该尝试落盘了
+    pass
+
+@dataclass
+class WikiUpdate(Event):    #wiki发生了一次更新，此事件提示Gui应刷新页面了
+    pass

@@ -15,7 +15,7 @@ import time
 from langchain.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
 
 from event.event_core import Bus,Loop,Router,Event
-from event.events import AppStart, AppClose, NotingStart, NotingStop,TaskMessage, ReporterResult, RequestReporterData
+from event.events import AppStart, AppClose, NotingStart, NotingStop,TaskMessage, ReporterResult, RequestReporterData, WikiEditFinish
 from core.background_agent.BaseTask import Task, FunctionTask
 from core.background_agent.Tasks import NotingTask, MessageTask
 from core.background_agent.Agent import BackgroundAgent
@@ -48,7 +48,7 @@ class BackgroundAgentModule:
         self._reported_data: dict[str,dict] = {}    # 请求ID -> 回信数据
         self._notting_singleton_lock: list[int] = [0]   # 用来假装一个可以就地修改的int值，用于对笔记任务进行去重。初值必须为0（虽然是list但实际上只会用到第一个位置的值）
 
-        # ------ 注册关闭时等待事件 ------
+        # ------ 关闭时阻塞事件 ------
         self._local_loop.register_stop_waiting_event(self._loop_finish_event)
 
         # ------ 注册回调函数 ------
@@ -216,6 +216,7 @@ class BackgroundAgentModule:
             try:
                 self._task_init(task)
                 self._agent.invoke(task)
+                self._core_loop.post(WikiEditFinish())  # 通知wiki层可以更新了
             except TypeError as e:
                 logger.warning(f"任务管理器执行时出现无法识别的任务：{e} \n已跳过本轮任务。请尽快自查代码逻辑")
             except TimeoutError as e:

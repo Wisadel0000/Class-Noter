@@ -1,4 +1,7 @@
-"""这个文件负责编写Agent的具体业务代码和构建逻辑"""
+"""
+这个文件负责编写Agent的具体业务代码和构建逻辑
+目前只往（本地）总线里发送日志，没有其他参与事件系统的逻辑
+"""
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import StateGraph, START
 from langgraph.graph.message import add_messages

@@ -1,15 +1,17 @@
 import threading
-
+from concurrent.futures import ThreadPoolExecutor
 from loguru import logger
+from pydantic import BaseModel, Field
 
+from event.event_core import Bus,Loop,Router
+from event.events import WikiEditFinish,WikiUpdate,AppClose
 from settings.setting_store import SettingStore
 from core.tools.ToolsManager import ToolsManager
 from settings.wiki_settings import WikiSetting
 from wikiencoder import WikiStore,WikiPage,ops,parse
 from wikiencoder.validate import lint_page
 from wikiencoder.index import WikiIndex
-
-from pydantic import BaseModel, Field
+from wikiencoder.export import export_site,export_page
 
 #
 # class Sections(TypedDict):
@@ -26,17 +28,36 @@ from pydantic import BaseModel, Field
 wiki管理器要集中读取wiki文件实例创建对应page对象
 并提供进行逻辑包装过的工具函数，比如自动完成保存、仓库合法性验证
 提供基于store的仓库查找方式，并自动发送事件提醒页面源变化。
+以及事件驱动的落盘管理
 """
 
 class WikiManager:
-    def __init__(self,setting_store:SettingStore,tools_manager:ToolsManager):
-        setting_store.subscribe("wiki_setting",self._setting_reload)
-        self._setting: WikiSetting = setting_store.get("wiki_setting")
+    def __init__(self,core_bus_router:Router, core_loop:Loop, local_bus:Bus, local_loop:Loop,setting_store:SettingStore,tools_manager:ToolsManager):
+        self._core_loop = core_loop
+        self._local_bus = local_bus
+        self._local_loop = local_loop
         self._tools_manager: ToolsManager = tools_manager
+        self._setting: WikiSetting = setting_store.get("wiki_setting")
+
         self._store = WikiStore(self._setting.raw_path, author="Nairy")
         self._pages: dict[str,WikiPage] ={}
+        self._changed: list[str] = []   # 发生了改变且没有渲染至导出文件夹的页面（的名字）
+        self._rlock =  threading.RLock()
+        self._thread_pool = ThreadPoolExecutor(max_workers=1)
+        self._thread_pool_over = threading.Event()
 
-        self._lock =  threading.Lock()
+        # ------ 设置更新订阅 ------
+        setting_store.subscribe("wiki_setting",self._setting_reload)
+
+        # ------ 关闭时阻塞事件 ------
+        self._local_loop.register_stop_waiting_event(self._thread_pool_over)
+
+        # ------ 注册回调 ------
+        self._local_bus.subscribe(WikiEditFinish,self.export_local_site)
+
+        # ------ 订阅总线事件 ------
+        core_bus_router.subscribe(WikiEditFinish,self._local_loop)
+        core_bus_router.subscribe(AppClose,self._local_loop)
 
         # ------ 工具注册 ------
         self._tools_manager.register("show_all_page",
@@ -76,6 +97,7 @@ class WikiManager:
                                                "delete_page",
                                                "amend_edit_record",
                                                "del_edit_record"])
+
     """
     集中管理page，已经读过的page对象存起来，不手动读取
     要自动完成对项目的保存和其他应当随手完成的工作。    #完成
@@ -88,6 +110,36 @@ class WikiManager:
 
     def _setting_reload(self,setting:WikiSetting):
         self._setting = setting
+
+    # ------ 消息响应 ------
+
+    def when_app_close(self):
+        self._thread_pool.shutdown()
+        self._thread_pool_over.set()
+
+    def export_local_site(self,event: WikiEditFinish):
+        self._thread_pool.submit(self._all_export)  # TODO现在每次保存全库效率有点低下了，记得更新下wiki工具添加新功能
+        self._core_loop.post(WikiUpdate())
+
+    # ------ 方法 ------
+
+    def _all_export(self):
+        """全库导出"""
+        with self._rlock:
+            export_site(self._store,
+                        out_dir = self._setting.out_path,
+                        site_name=self._setting.site_name
+                        )
+
+    def _single_export(self,slug: str):
+        """单页导出，渲染导出某一个单独的页面，
+        使用了Rlock所以外部允许不加锁，如果后续把Rlock改成了lock，则此函数外部必须加锁同时把本函数内部的锁删掉，防止死锁"""
+        with self._rlock:
+            export_page(self._store,
+                        slug=slug,
+                        out_dir=self._setting.out_path,
+                        with_related=True,
+                        )
 
     def _get_page(self, slug: str) -> WikiPage:
         if slug in self._pages:
@@ -109,7 +161,8 @@ class WikiManager:
     # 查看库中词条列表
     def show_all_page(self):
         """列出库中所有已有词条的名称，每一个对应词条的页面都可以用这里返回的名称索引到。"""
-        return str(self._store.slugs())
+        with self._rlock:
+            return str(self._store.slugs())
     def show_all_page_log(self):
         return "查看了所有已有词条的页面名"
 
@@ -128,9 +181,10 @@ class WikiManager:
             logger.info(f"本次页面{entry}保存失败，存在error")
             return f"页面存在error，本次未保存。诊断报告:{report["items"]}"
         else:
-            ops.add_edit_record(page, message=commit_message, date=page.created, author="Agent")
-            self._pages[entry] = page   # 更新内存中的页面对象
-            self._store.save(page)  # 不存在就新建，存在就整页覆盖
+            with self._rlock:
+                ops.add_edit_record(page, message=commit_message, date=page.created, author="Agent")
+                self._pages[entry] = page   # 更新内存中的页面对象
+                self._store.save(page)  # 不存在就新建，存在就整页覆盖
             return f"页面保存成功, 附诊断报告:{report["items"]}"
     def edit_page_by_str_log(self,  entry: str, content: str, commit_message: str):
         return f"创建/修改了{entry}页面：{commit_message}"
@@ -140,9 +194,10 @@ class WikiManager:
         entry: str = Field(description="字符串，要删除的词条名")
     def delete_page(self, entry: str):
         """删除一个词条对应的页面"""
-        if entry in self._pages:
-            self._pages.pop(entry, None)
-        self._store.delete(entry)
+        with self._rlock:
+            if entry in self._pages:
+                self._pages.pop(entry, None)
+            self._store.delete(entry)
     def delete_page_log(self, entry: str):
         return f"删除了{entry}页面"
 
@@ -151,8 +206,9 @@ class WikiManager:
         entry: str = Field(description="字符串，要阅读的词条名")
     def read_page(self, entry: str) -> str:
         """阅读指定词条的页面"""
-        page = self._get_page(entry)
-        return page.to_text()   #直接把原文发给ai
+        with self._rlock:
+            page = self._get_page(entry)
+            return page.to_text()   #直接把原文发给ai
     def read_page_log(self, entry: str):
         return f"阅读了{entry}页面"
 
@@ -162,9 +218,10 @@ class WikiManager:
         new_message: str = Field(description="字符串，新的提交信息")
     def amend_edit_record(self,entry:str,index:int,new_message:str):
         """修改对应页面指定索引的编辑记录"""
-        page = self._get_page(entry)
-        ops.amend_edit_record(page=page,n=index,message=new_message)
-        self._store.save(page)
+        with self._rlock:
+            page = self._get_page(entry)
+            ops.amend_edit_record(page=page,n=index,message=new_message)
+            self._store.save(page)
     def amend_edit_record_log(self,entry:str,index:int,new_message:str):
         return f"修改了{entry}页面的第{index}条编辑记录为：{new_message}"
 
@@ -173,9 +230,10 @@ class WikiManager:
         index: int = Field(description="整数，要删除的编辑记录的索引编号")
     def del_edit_record(self,entry:str,index:int):
         """删除对应页面指定索引的编辑记录"""
-        page = self._get_page(entry)
-        ops.remove_edit_record(page=page,n=index)
-        self._store.save(page)
+        with self._rlock:
+            page = self._get_page(entry)
+            ops.remove_edit_record(page=page,n=index)
+            self._store.save(page)
     def del_edit_record_log(self, entry: str, index: int):
         return f"删除了{entry}页面的第{index}条编辑记录"
 

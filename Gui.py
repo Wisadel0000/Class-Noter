@@ -10,7 +10,7 @@ from flet_webview_all import FletWebviewAll
 
 from core.wiki.manager import WikiManager
 from event.event_core import Bus,Loop,Router
-from event.events import MessageToUser, UserMessage, AppStart, NotingStart, NotingStop, NotingAlready, TaskLogUpdate
+from event.events import MessageToUser, UserMessage, AppStart, NotingStart, NotingStop, NotingAlready, TaskLogUpdate, WikiUpdate
 
 
 class GuiModule:
@@ -26,12 +26,15 @@ class GuiModule:
         self._agent_ready = False
         # 最新一条后台工作日志，收到 TaskLogUpdate 后更新
         self._task_log: dict = {"now_task": None, "content": ""}
+        # wiki 是否有未刷新的改动，wiki 页面据此显示刷新角标
+        self._wiki_dirty = False
 
         # 界面跑起来后由 main / talk_page 填上的引用
         self._page: ft.Page | None = None
         self._set_messages = None
         self._set_agent_ready = None
         self._set_task_log = None
+        self._set_wiki_dirty = None
         # 聊天记录会被 UI 线程和本地总线线程同时读写，加把锁
         self._chat_lock = threading.Lock()
 
@@ -43,12 +46,14 @@ class GuiModule:
         self._local_bus.subscribe(MessageToUser,self.receive_message)
         self._local_bus.subscribe(NotingAlready,self.noting_already)
         self._local_bus.subscribe(TaskLogUpdate,self.task_log_update)
+        self._local_bus.subscribe(WikiUpdate,self.wiki_update)
 
         # ------ 订阅总线事件 ------
         # core_bus_router.subscribe(AppStart,self._local_loop)
         core_bus_router.subscribe(MessageToUser,self._local_loop)
         core_bus_router.subscribe(NotingAlready,self._local_loop)
         core_bus_router.subscribe(TaskLogUpdate,self._local_loop)
+        core_bus_router.subscribe(WikiUpdate,self._local_loop)
 
     def main(self,page: ft.Page):
         self._page = page
@@ -145,7 +150,7 @@ class GuiModule:
             return ft.Router([
                 ft.Route(index=True, component=root_page),
                 ft.Route(path="/talk", component=talk_page),
-                ft.Route(path="/a", component=page_a),
+                ft.Route(path="/a", component=wiki_page),
                 #TODO：ft.Route(path="/config", component=config_page),  #不许删除这一行
             ])
 
@@ -154,9 +159,14 @@ class GuiModule:
         def root_page():
             return ft.Text("这是占位根目录，请访问/talk")
 
-        # ── A 页面（内置浏览器：wiki 库首页） ──
+        # ── Wiki页面（内置浏览器：wiki 库首页） ──
         @ft.component
-        def page_a():
+        def wiki_page():
+            # 每次进入本页都会重新挂载并加载 index.html，进入前积压的更新作废
+            wiki_dirty, set_wiki_dirty = ft.use_state(False)
+            self._set_wiki_dirty = set_wiki_dirty
+            ft.use_effect(lambda: setattr(self, "_wiki_dirty", False), [])
+
             # 相对路径不能直接转 URI，先 resolve 成绝对路径
             index_path = (Path(self._wiki_manager.get_wiki_path()) / "index.html").resolve()
             webview = FletWebviewAll(
@@ -166,6 +176,9 @@ class GuiModule:
             )
 
             async def go_home(e):
+                # 回到首页等同于重新加载，角标一起清掉
+                self._wiki_dirty = False
+                set_wiki_dirty(False)
                 # 改 url 属性只有在值变化时才会触发加载，页内跳转后 Python 侧 url 没变，
                 # 所以直接用 JS 跳回首页
                 await webview.run_javascript(
@@ -173,6 +186,8 @@ class GuiModule:
                 )
 
             async def reload_page(e):
+                self._wiki_dirty = False
+                set_wiki_dirty(False)
                 await webview.reload()
 
             async def go_back(e):
@@ -191,7 +206,12 @@ class GuiModule:
                                             [
                                                 ft.IconButton(icon=ft.Icons.MENU, on_click=handle_show_drawer),
                                                 ft.IconButton(icon=ft.Icons.HOME, tooltip="回到首页", on_click=go_home),
-                                                ft.IconButton(icon=ft.Icons.REFRESH, tooltip="刷新", on_click=reload_page),
+                                                ft.IconButton(
+                                                    icon=ft.Icons.REFRESH,
+                                                    tooltip="刷新",
+                                                    badge=ft.Badge(label="有更新", bgcolor=ft.Colors.RED) if wiki_dirty else None,
+                                                    on_click=reload_page,
+                                                ),
                                             ],
                                             spacing=0,
                                         ),
@@ -426,6 +446,19 @@ class GuiModule:
 
     async def _apply_task_log(self, set_task_log, log: dict):
         set_task_log(log)
+
+    def wiki_update(self, event: WikiUpdate):
+        """wiki 文件发生改动：标记待刷新，wiki 页面显示刷新角标"""
+        self._wiki_dirty = True
+        page, set_wiki_dirty = self._page, self._set_wiki_dirty
+        if page is None or set_wiki_dirty is None:
+            # wiki 页面没挂载，等进入页面时再按 self._wiki_dirty 初始化
+            return
+        # 回调在本地总线线程里执行，切回 Flet 的事件循环再改状态
+        page.run_task(self._apply_wiki_dirty, set_wiki_dirty)
+
+    async def _apply_wiki_dirty(self, set_wiki_dirty):
+        set_wiki_dirty(self._wiki_dirty)
 
     def _snapshot_chat(self) -> list[dict]:
         with self._chat_lock:

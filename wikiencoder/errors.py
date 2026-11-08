@@ -25,6 +25,8 @@ W_DUPLICATE_SECTION = "E504"  # 同一板块出现多次
 W_MISSING_PREAMBLE = "E505"  # 缺少序言
 W_TITLE_DUPLICATE = "E506"  # 两个页面标题相同
 W_MISSING_BODY = "E507"  # 缺少详细内容
+W_SECTION_TITLE_COLLISION = "E508"  # 自定义板块名撞了规范板块名
+W_DUPLICATE_EXTRA = "E509"  # 自定义板块重名
 I_ORPHAN = "E601"  # 孤岛页面
 E_SELF_LINK = "E602"  # 自链接
 

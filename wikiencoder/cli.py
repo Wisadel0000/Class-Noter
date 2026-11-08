@@ -308,6 +308,32 @@ def cmd_index(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_kinds(args: argparse.Namespace) -> int:
+    """列出全库已有的 kind（front matter 的 type），便于新建时选类型。"""
+    from .index import UNCLASSIFIED, WikiIndex
+
+    store = _store(args)
+    index = WikiIndex(store)
+    groups = index.kinds()
+    if args.json:
+        _emit(
+            {
+                kind: [
+                    {"slug": slug, "title": index.pages[slug].title} for slug in slugs
+                ]
+                for kind, slugs in groups.items()
+            },
+            as_json=True,
+        )
+        return EXIT_OK
+    for kind, slugs in groups.items():
+        titles = "、".join(sorted(index.pages[slug].title for slug in slugs))
+        print(f"{kind}\t{len(slugs)}\t{titles}")
+    suffix = f"（其中「{UNCLASSIFIED}」是没有写 type 的）" if UNCLASSIFIED in groups else ""
+    print(f"共 {len(groups)} 种 kind{suffix}")
+    return EXIT_OK
+
+
 def cmd_search(args: argparse.Namespace) -> int:
     from .index import WikiIndex
 
@@ -324,16 +350,32 @@ def cmd_search(args: argparse.Namespace) -> int:
 
 
 def cmd_build(args: argparse.Namespace) -> int:
-    from .export import export_site
+    from .export import export_page, export_site
 
     store = _store(args)
-    result = export_site(
-        store,
-        args.out,
-        site_name=args.site_name,
-        mathjax=args.mathjax,
-        toc_depth=args.toc_depth,
-    )
+    if args.with_related and not args.only:
+        print("错误：--with-related 需要配合 --only 使用", file=sys.stderr)
+        return EXIT_FAIL
+
+    if args.only:
+        result = export_page(
+            store,
+            args.only,
+            args.out,
+            with_related=args.with_related,
+            site_name=args.site_name,
+            mathjax=args.mathjax,
+            toc_depth=args.toc_depth,
+        )
+    else:
+        result = export_site(
+            store,
+            args.out,
+            site_name=args.site_name,
+            mathjax=args.mathjax,
+            toc_depth=args.toc_depth,
+        )
+
     if args.json:
         _emit(
             {
@@ -344,6 +386,9 @@ def cmd_build(args: argparse.Namespace) -> int:
             },
             as_json=True,
         )
+    elif args.only:
+        names = "、".join(path.stem for path in result.pages)
+        print(f"已导出 {result.count} 个页面 → {result.out_dir}（{names}）")
     else:
         print(f"已导出 {result.count} 个页面、{len(result.tags)} 个标签页 → {result.out_dir}")
     return EXIT_OK
@@ -452,13 +497,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--build", dest="only_build", action="store_true")
     sp.add_argument("--json", action="store_true")
 
+    sp = add("kinds", cmd_kinds, "列出全库已有的 kind（类型）")
+    sp.add_argument("--json", action="store_true")
+
     sp = add("search", cmd_search, "搜索条目")
     sp.add_argument("query")
     sp.add_argument("--limit", type=int, default=20)
     sp.add_argument("--json", action="store_true")
 
-    sp = add("build", cmd_build, "导出静态站点")
+    sp = add("build", cmd_build, "导出静态站点（或只导一个页面）")
     sp.add_argument("-o", "--out", default="out")
+    sp.add_argument("--only", help="只导出这一页（写 slug）")
+    sp.add_argument(
+        "--with-related",
+        dest="with_related",
+        action="store_true",
+        help="配合 --only：连它的一跳出链与反链一起导出",
+    )
     sp.add_argument("--site-name", default="")
     sp.add_argument("--mathjax", action="store_true")
     sp.add_argument("--toc-depth", type=int, default=3)

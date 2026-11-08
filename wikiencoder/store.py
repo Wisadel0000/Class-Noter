@@ -268,7 +268,13 @@ class WikiStore:
         page.ensure_section(S.PREAMBLE).set_body(preamble or title + "\n")
         page.ensure_section(S.INFOBOX).set_body("")
         page.ensure_section(S.BODY).set_body(body or "")
+        extra_warnings: list[str] = []
         for name, content in (extra or {}).items():
+            if S.resolve_section(name) is not None:
+                extra_warnings.append(
+                    f"自定义板块「{name}」与规范板块同名，落盘后会被解析成规范板块"
+                    "（可能产生重复板块）"
+                )
             page.insert_section(
                 Section(
                     key=S.EXTRA,
@@ -279,7 +285,9 @@ class WikiStore:
                 )
             )
         page.path = path
-        return self.save(page, dry_run=dry_run)
+        result = self.save(page, dry_run=dry_run)
+        result.warnings.extend(extra_warnings)
+        return result
 
     def delete(self, slug: str, *, dry_run: bool = False) -> OpResult:
         """软删除：移到 ``.trash/``，不直接 rm。"""

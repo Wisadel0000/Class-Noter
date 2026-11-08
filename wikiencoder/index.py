@@ -19,6 +19,9 @@ _EXT = ".wiki"
 _NORMALIZE = re.compile(r"[\s_]+")
 _SQUEEZE = re.compile(r"-{2,}")
 
+#: 没有写 ``type`` 的页面在 kind 分组里用这个标签
+UNCLASSIFIED = "（未分类）"
+
 #: 信息框里表达"从属关系"的键
 PARENT_KEYS = ("父级", "父级知识点", "上级", "父概念")
 DOMAIN_KEYS = ("领域", "从属领域", "学科")
@@ -222,6 +225,25 @@ class WikiIndex:
         for slug, entry in self.pages.items():
             for tag in entry.tags:
                 result.setdefault(tag, []).append(slug)
+        return dict(sorted(result.items()))
+
+    def by_kind(self, kind: str) -> list[str]:
+        """取某一 kind（front matter 的 type）下的所有 slug。"""
+        wanted = kind.strip()
+        return [
+            slug
+            for slug, entry in self.pages.items()
+            if (entry.kind or UNCLASSIFIED) == wanted
+        ]
+
+    def kinds(self) -> dict[str, list[str]]:
+        """``{kind: [slug, ...]}``，方便查看库里已有哪些类型。
+
+        没有写 ``type`` 的页面归到 :data:`UNCLASSIFIED`。
+        """
+        result: dict[str, list[str]] = {}
+        for slug, entry in self.pages.items():
+            result.setdefault(entry.kind or UNCLASSIFIED, []).append(slug)
         return dict(sorted(result.items()))
 
     def graph(self) -> dict:

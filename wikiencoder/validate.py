@@ -14,9 +14,11 @@ from .errors import (
     E_SELF_LINK,
     E_TITLE_MISSING,
     I_ORPHAN,
+    W_DUPLICATE_EXTRA,
     W_DUPLICATE_SECTION,
     W_MISSING_BODY,
     W_MISSING_PREAMBLE,
+    W_SECTION_TITLE_COLLISION,
     W_TITLE_DUPLICATE,
     Diagnostic,
     ParseError,
@@ -104,18 +106,40 @@ def lint_page(page: WikiPage, index: WikiIndex, *, slug: str = "") -> Report:
         report.extend(log_diagnostics)
 
     seen: dict[str, int] = {}
+    extra_titles: dict[str, int] = {}
     for section in page.sections:
-        if section.key != S.EXTRA:
-            seen[section.key] = seen.get(section.key, 0) + 1
-            if seen[section.key] > 1:
+        if section.key == S.EXTRA:
+            title = section.title.strip()
+            if S.resolve_section(title) is not None:
                 report.add(
                     Diagnostic(
-                        W_DUPLICATE_SECTION,
-                        f"板块「{S.CANONICAL_TITLES.get(section.key, section.key)}」重复",
+                        W_SECTION_TITLE_COLLISION,
+                        f"自定义板块「{title}」与规范板块同名，会被当成规范板块解析",
                         section.line,
                         "warn",
                     )
                 )
+            extra_titles[title] = extra_titles.get(title, 0) + 1
+            if extra_titles[title] > 1:
+                report.add(
+                    Diagnostic(
+                        W_DUPLICATE_EXTRA,
+                        f"自定义板块「{title}」重名（get_section 只返回第一个）",
+                        section.line,
+                        "warn",
+                    )
+                )
+            continue
+        seen[section.key] = seen.get(section.key, 0) + 1
+        if seen[section.key] > 1:
+            report.add(
+                Diagnostic(
+                    W_DUPLICATE_SECTION,
+                    f"板块「{S.CANONICAL_TITLES.get(section.key, section.key)}」重复",
+                    section.line,
+                    "warn",
+                )
+            )
 
     for link in page.links():
         target = index.resolve(link.target)
@@ -155,7 +179,8 @@ def validate_store(store, *, index: WikiIndex | None = None) -> Report:
         except ParseError as exc:
             report.add(Diagnostic(exc.code, f"{slug}: {exc.message}", exc.line, "error"))
             continue
-        report.extend(page.diagnostics)
+        # 重复板块由 lint_page 统一检查，这里跳过解析阶段的同名诊断，避免重复报两遍
+        report.extend([item for item in page.diagnostics if item.code != W_DUPLICATE_SECTION])
         report.extend(lint_page(page, index, slug=slug).items)
 
         normalized = page.title.strip().casefold()
