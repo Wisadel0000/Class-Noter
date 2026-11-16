@@ -3,8 +3,6 @@ load_dotenv()
 # 加载环境（必须置于所有import之前）
 
 from di_container import DIContainer
-
-from pathlib import Path
 import threading
 from loguru import logger
 
@@ -117,8 +115,7 @@ def main():
         loop=c.resolve("CoreLoop"),
         setting_store=c.resolve("SettingStore"),
         gui=c.resolve("Gui_Module"),
-        models_loops=[
-                      c.resolve("Wiki_Loop"),
+        models_loops=[c.resolve("Wiki_Loop"),
                       c.resolve("Front_Loop"),
                       c.resolve("Background_Loop"),
                       c.resolve("Reporter_Loop"),

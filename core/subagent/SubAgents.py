@@ -1,53 +1,115 @@
-#子agent模板的保存
-#子agent的构建（模板创建）
-#子agent的实例化 *生命周期控制*
-from langchain.messages import AnyMessage
+
+from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.graph import StateGraph, START
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict, Annotated
+from loguru import logger
+from datetime import date
 
-import _legacy.model as model_router
+from core.background_agent.graphs_manager import GraphBlockManager, GraphTaskManager
+from core.tools.ToolsManager import ToolsManager
+from settings.routers.provider import ProviderRouter
 
-""" Subagent 在创建模板时，必须只专注于完成一件任务，操作一个对象"""
-
-model = model_router.model
-
-_base_prompt = """
-如果发现你的任务职责与你收到的任务内容不符，请发送日志并直接终止本次任务。
-"""
-
-# 关键消息状态的定义
-class SubMessageState(TypedDict):
+# 定义Agent的消息state    (以类型注解的形式)
+class MessageState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
-    base_prompt: str
-    task_prompt: str # 任务需求的基本概括
-    operation_manual: str # 操作手册（基本规则、特使情况应对方式）
-    task_intelligence: str # 本轮任务的相关基本信息（我觉得最好是json或class这种基本的字典式类型，先用str吧）
+    now_task: str
+    agent_prompt: str
+    llm_calls: int
 
-# 工具的构建
+class SubAgents:
+    """提供subagent实例"""
+    def __init__(self, provider_router: ProviderRouter, tools_manager: ToolsManager, graph_block_manager:GraphBlockManager, graph_task_manager:GraphTaskManager):
+        self._provider_router = provider_router
+        self._tools_manager = tools_manager
 
-#开始节点
-def start_node(state: dict):
-    pass # 后续自定义逻辑
-    return state
-#LLM节点
-def llm_node(state: dict):
-    base_prompt = state["base_prompt"]
-    task_prompt = state["task_prompt"]
-    operation_manual = state["operation_manual"]
+        self._default_tools = "default"
 
-    task_intelligence = state["task_intelligence"]
+    # agent节点
+    def _agent_node(self,state: dict):
+        """"
+        agent “观察-执行”循环节点————观察节点
+        """
+        now_date = f"今日日期为：{date.today().isoformat()}\n"
 
-    # 提示词拼装
-    prompt =("你的身份：\n" + task_prompt
-             + "\n任务规则：\n" + operation_manual
-             + "\n基本原则：\n" + base_prompt)
+        model  = self._provider_router.model_route()
 
-    #工具列表构建
-    pass
+        # 提示词获取与构建
+        system_prompt = ""
+        human_msg = ""
+        # 工具列表获取
 
+        _tools =  self._tools_manager.get_tool_set_by_list([self._default_tools,])
+        # 工具嵌入
+        _model_with_tools = model.bind_tools(_tools)
 
+        last_messages = state["messages"]
+        last_messages = [SystemMessage(content=system_prompt),HumanMessage(content=human_msg)] + last_messages  # TODO记得修改为ChatMessage版本查看效果
 
-    return state #TODO
-#工具节点
-#条件边
-#终止节点
+        result = _model_with_tools.invoke(last_messages)
+        logger.debug(f"subagent工作输出:{result.content}")
+        logger.debug(f"subagent本轮工具调用:{result.tool_calls}")
+
+        return {
+            "messages": [result], # 调用模型并将返回的消息插入messages（由于messages是增量式更新，所以不用把旧上下文也拼进来）
+            "llm_calls": state.get('llm_calls', 0) + 1,
+        }
+
+    # 工具节点：输入一个状态（字典），输出一个新包装好的消息列表
+    def _agent_tool(self,state: dict):
+        """
+        agent “观察-执行”循环节点————执行节点
+        :param state:
+        :return:
+        """
+        result = [] # 每一条构造处理的ToolMessage会被保存在这里。最后一起插入到messages这个上下文中
+        for tool_call in state["messages"][-1].tool_calls: # 遍历ai的调用列表，相应每一条执行请求
+            tool = self._tools_manager.get_tool_by_name(tool_call["name"])
+            try :
+                observation = tool.invoke(tool_call["args"])
+            except Exception as e:  #捕获报错信息
+                observation = str(e)
+            # 返回类型检查
+            if observation is None: observation = ""
+            if not isinstance(observation, str): observation = str(observation) #确保结果是字符串，不然创建ToolMessage时会报错
+            result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"], ))
+        return {"messages": result}
+
+    def _starter(self, state: dict):
+        pass
+        return
+
+    def _ender(self, state: dict):
+        pass
+        return
+
+    def _router_before_agent(self, state: MessageState) -> str:
+        return "agent"
+
+    def _router_after_agent(self, state: MessageState) -> str:
+        # 取出最新的消息
+        messages = state["messages"]
+        last_message = messages[-1]
+
+        # 观察大模型是否进行了工具调用 （tool_call 字段是否不为空）
+        if last_message.tool_calls:
+            return "agent_tool"  # 进入agent_tool节点
+        else:
+            return "end"
+
+    def compile(self):
+        # 状态图实例
+        _blue_map = StateGraph(MessageState)
+        # 节点加入
+        _blue_map.add_node("starter", self._starter)
+        _blue_map.add_node("agent_node", self._agent_node)
+        _blue_map.add_node("agent_tool", self._agent_tool)
+        _blue_map.add_node("ender", self._ender)
+
+        # 边加入
+        _blue_map.add_edge(START,"starter")
+        _blue_map.add_conditional_edges("starter", self._router_before_agent,["agent_node", ])
+        _blue_map.add_edge("agent_tool", "agent_node")
+        _blue_map.add_conditional_edges("agent_node", self._router_after_agent, ["agent_tool", "ender"])
+
+        return _blue_map.compile()

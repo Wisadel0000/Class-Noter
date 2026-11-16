@@ -76,6 +76,7 @@ class ToolsManager:
         return list(tools)
 
     def get_tool_set_by_list(self,set_names: list[str]) -> list:
+        """使用（工具集名称）列表批量获取多个工具集的并集"""
         name_set = set()    # 用集合去重
         for set_name in set_names:
             _ = self._tool_sets.get(set_name)
