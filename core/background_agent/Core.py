@@ -212,13 +212,9 @@ class BackgroundAgentModule:
                         handle()
                 continue # 跳过agent执行，直接进入下一次循环
 
-            """调用agent"""
+            """task组装"""
             try:
                 self._task_init(task)
-                self._agent.invoke(task)
-                self._core_loop.post(WikiEditFinish())  # 通知wiki层可以更新了
-            except TypeError as e:
-                logger.warning(f"任务管理器执行时出现无法识别的任务：{e} \n已跳过本轮任务。请尽快自查代码逻辑")
             except TimeoutError as e:
                 logger.warning(e)
                 # 停止笔记循环
@@ -226,6 +222,12 @@ class BackgroundAgentModule:
                 # 清理信箱
                 with self._lock:
                     self._reported_data.clear()
+            """调用agent"""
+            try:
+                self._agent.invoke(task)
+                self._core_loop.post(WikiEditFinish())  # 通知wiki层可以更新了
+            except TypeError as e:
+                logger.warning(f"任务管理器执行时出现无法识别的任务：{e} \n已跳过本轮任务。请尽快自查代码逻辑")
             except Exception as e:
                 logger.error(f"任务管理器执行时出现意外错误：{e} \n请尽快自查代码逻辑")
                 raise e # 日志记完了，抛出异常

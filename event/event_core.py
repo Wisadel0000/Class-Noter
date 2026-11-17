@@ -12,11 +12,20 @@ from loguru import logger
 class Event:
     pass
 
+class ReplyEvent(Event):
+    request_id:str
+    data: Any
+
+class RequestEvent(Event):
+    request_id:str
+
 class _LoopStop(Event):  # 停止事件
     pass
 
 # 方便使用的类型别名
 Handler = Callable[[Event], None]
+
+_LoopThreads:list #TODO总线禁止等待
 
 class Bus:
     """订阅表 + 同步分发。
@@ -26,6 +35,7 @@ class Bus:
 
     def __init__(self) -> None:
         self._handlers: dict[type[Event], list[Handler]] = defaultdict(list)
+        self._reply_events: list[type[ReplyEvent]] = []
 
     def subscribe(self, event_type: type[Event], handler: Handler) -> Callable[[], None]:
         """把回调函数注册到特定的事件上
@@ -36,6 +46,15 @@ class Bus:
         # TODO:最好加上线程锁
         self._handlers[event_type].append(handler)
         return lambda: self._handlers[event_type].remove(handler)  # 取消订阅
+
+    def subscribe_as_reply(self,event_type: type[ReplyEvent]):
+        """只在接收端bus&loop上视为‘回信’事件，在未注册过的bus上视为普通事件，即只要总bus上没有对应的回调，就会正常转发。"""
+        self._reply_events.append(event_type)
+        return lambda: self._reply_events.remove(event_type)
+
+    def is_reply_event(self,event):
+        cls = type(event)
+        return cls in self._reply_events
 
     def publish(self, event: Event) -> None:
         """向所有订阅者发布事件
@@ -66,11 +85,55 @@ class Loop:
         self._queue: queue.Queue[Event] = queue.Queue()
         self._running = False
         self._wait_before_stop: list[threading.Event] = []  # 一个列表用于保存所有在关闭时必须等待升起（等待某些逻辑完成）的旗帜
+        self._lock = threading.Lock()
+        self._mailbox: dict[str,dict] = {}    # 请求ID -> 回信数据{flag:threading.Event,data:dict}
 
     # 任何线程都可以安全地投递事件
     def post(self, event: Event) -> None:
-        """向Loop中投递一个事件"""
+        """向Loop中投递一个普通事件"""
         self._queue.put(event)
+
+    def post_request(self,event:RequestEvent,aim_loop:"Loop|None"=None):
+        """向Loop中投递一个请求事件
+        # 请求-响应 机制
+        # loop向总线询问每一个事件是被订阅为了‘回复’事件，如果是，则不发布而是在当前loop中完成数据接收等待需要的人来wait。
+        """
+        with self._lock:
+            self._mailbox[event.request_id] = {"flag":threading.Event(),"data":dict}
+        if aim_loop is None:
+            aim_loop = self
+        aim_loop.post(event)
+        logger.debug(f"【Bus:{id(self.bus)}|Loop:{id(self)}】成功投递了一个请求事件，request_id:{event.request_id}")
+
+    def wait_reply(self,request_id:str,timeout:int=10,retry:int=14):
+        """等待回复，然后return事件的data字典"""
+        mail = self._mailbox[request_id]
+        flag = mail.get("flag")
+        for times in range(retry+1):  # 最多重试retry次(第一次不算重试)
+            if flag.wait(timeout=timeout):  # 每次请求30秒
+                # 不 用 等
+                break
+            if times < retry: logger.debug(f"【Bus:{id(self.bus)}|Loop:{id(self)}】本轮等待回信失败，正在重试（{times + 1}/{retry}）")
+        else:
+            # 没等到
+            with self._lock:
+                self._mailbox.pop(request_id, None)
+            raise TimeoutError(f"【Bus:{id(self.bus)}|Loop:{id(self)}】内部总线等待超时。request_id:{request_id}")
+        # 等到了
+        with self._lock:
+            self._mailbox.pop(request_id, None) #清理
+            if mail.get("error"):
+                raise RuntimeError(mail["error"])
+            return mail.get("data")
+
+    def reply_response(self,event:ReplyEvent):
+        """把接受到的回复装进对应的请求信箱"""
+        logger.debug(f"【Bus:{id(self.bus)}|Loop:{id(self)}】响应了回复事件，request_id{event.request_id}")
+        with self._lock:
+            mail = self._mailbox.get(event.request_id)
+            if mail and not mail["flag"].is_set():  # 如果信箱存在，且没有被回复过
+                mail["data"] = event.data  # 保存回信数据
+                mail["flag"].set()  # set旗帜，唤醒等待处的线程
 
     def register_stop_waiting_event(self,flag:threading.Event):
         self._wait_before_stop.append(flag)
@@ -86,23 +149,30 @@ class Loop:
         while self._running:
             event = self._queue.get()          # 阻塞等待（如果没拿到就等）
             if event is self.STOP:
-                for flag in self._wait_before_stop:
+                for mail in self._mailbox.values():
+                    mail["error"] = "Loop 已停止"
+                    mail["flag"].set()
+                for flag in self._wait_before_stop: #等待必等项
                     if flag.wait(timeout=5):
                         continue
                     else:
                         logger.warning(f"【Bus:{id(self.bus)}|Loop:{id(self)}】关闭程序时出现超时未能结束的任务")
                 self._running = False
                 break
-            self.bus.publish(event)
+
+            if self.bus.is_reply_event(event):
+                self.reply_response(event)  #处理‘回复’
+            else:
+                self.bus.publish(event) #触发注册的回调
 
 class Router:
-    """事件路由器
+    """
+    事件路由器
     负责辅助核心Loop转发事件到指定的模块级Loop中
     - 提供一个注册函数，用于指定特定事件的转发目标
     """
     def __init__(self,core_bus: Bus):
         self._routes : dict[type[Event], list[Loop]] = defaultdict(list)
-
         # 订阅
         core_bus.subscribe(Event, self.route)
         logger.info("Router:已将事件路由逻辑成功挂载到核心总线")
