@@ -25,7 +25,7 @@ class _LoopStop(Event):  # 停止事件
 # 方便使用的类型别名
 Handler = Callable[[Event], None]
 
-_LoopThreads:list #TODO总线禁止等待
+_LOOP_RUN_CONTEXT = threading.local()   # 标记当前线程是不是某个 Loop 的 run() 线程
 
 class Bus:
     """订阅表 + 同步分发。
@@ -107,6 +107,14 @@ class Loop:
 
     def wait_reply(self,request_id:str,timeout:int=10,retry:int=14):
         """等待回复，然后return事件的data字典"""
+
+        # 检查当前线程是不是运行再了某个事件Loop中，防止阻塞
+        if getattr(_LOOP_RUN_CONTEXT, "active", False):
+            raise RuntimeError(
+                f"【Bus:{id(self.bus)}|Loop:{id(self)}】在事件循环线程里调用了 wait_reply，"
+                f"占用总线等待回信可能造成死锁。请在独立工作线程中等待。request_id:{request_id}"
+            )
+
         mail = self._mailbox[request_id]
         flag = mail.get("flag")
         for times in range(retry+1):  # 最多重试retry次(第一次不算重试)
@@ -144,26 +152,34 @@ class Loop:
 
     def run(self) -> None:
         """Loop的核心逻辑：逐个发布队列中的事件"""
+        _LOOP_RUN_CONTEXT.active = True  # Loop线程标记
         logger.info(f"【Bus:{id(self.bus)}|Loop:{id(self)}】开始运行")
         self._running = True
-        while self._running:
-            event = self._queue.get()          # 阻塞等待（如果没拿到就等）
-            if event is self.STOP:
-                for mail in self._mailbox.values():
-                    mail["error"] = "Loop 已停止"
-                    mail["flag"].set()
-                for flag in self._wait_before_stop: #等待必等项
-                    if flag.wait(timeout=5):
-                        continue
-                    else:
-                        logger.warning(f"【Bus:{id(self.bus)}|Loop:{id(self)}】关闭程序时出现超时未能结束的任务")
-                self._running = False
-                break
+        try:
+            while self._running:
+                event = self._queue.get()  # 阻塞等待（如果没拿到就等）
+                if event is self.STOP:
+                    # 进入程序的停止逻辑
+                    # 告知所有等待回信的线程不需要再等待了
+                    for mail in self._mailbox.values():
+                        mail["error"] = "Loop 已停止"
+                        mail["flag"].set()
+                    # 等待必须完成的代码逻辑结束
+                    for flag in self._wait_before_stop:  # 等待必等项
+                        if flag.wait(timeout=5):
+                            continue
+                        else:
+                            logger.warning(f"【Bus:{id(self.bus)}|Loop:{id(self)}】关闭程序时出现超时未能结束的任务")
+                    # 更新运行状态并退出while循环
+                    self._running = False
+                    break
 
-            if self.bus.is_reply_event(event):
-                self.reply_response(event)  #处理‘回复’
-            else:
-                self.bus.publish(event) #触发注册的回调
+                if self.bus.is_reply_event(event):
+                    self.reply_response(event)  # 处理‘回复’
+                else:
+                    self.bus.publish(event)  # 触发注册的回调
+        finally:
+            _LOOP_RUN_CONTEXT.active = True  # Loop线程标记
 
 class Router:
     """
