@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from event.event_core import Event
+from event.event_core import Event, RequestEvent, ReplyEvent
 
 @dataclass
 class NotingAlready(Event):
@@ -41,12 +41,12 @@ class MessageToUser(Event):
     pass
 
 @dataclass
-class RequestReporterData(Event):
+class RequestReporterData(RequestEvent):
     """请求转述模块的新数据"""
     request_id:str  #与回复消息的id对应
 
 @dataclass
-class ReporterResult(Event):
+class ReporterResult(ReplyEvent):
     request_id: str
     data: str
 

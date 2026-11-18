@@ -14,7 +14,7 @@ import time
 # TODO后面记得清理掉这行导入
 from langchain.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
 
-from event.event_core import Bus,Loop,Router,Event
+from event.event_core import Bus,Loop,Router,Event,LoopStopped # LoopStopped是一个Exception
 from event.events import AppStart, AppClose, NotingStart, NotingStop,TaskMessage, ReporterResult, RequestReporterData, WikiEditFinish
 from core.background_agent.BaseTask import Task, FunctionTask
 from core.background_agent.Tasks import NotingTask, MessageTask
@@ -44,8 +44,6 @@ class BackgroundAgentModule:
         self._lock =  threading.Lock()
         self._loop_finish_event = threading.Event()
 
-        # ↓运行时的值形如{114514:{"flag":threading.Event(),"data": "..."}}，转述模块的回信数据会保存在这里的data字段中，flag字段用于标识数据传回状态（已到达/未到达）
-        self._reported_data: dict[str,dict] = {}    # 请求ID -> 回信数据
         self._notting_singleton_lock: list[int] = [0]   # 用来假装一个可以就地修改的int值，用于对笔记任务进行去重。初值必须为0（虽然是list但实际上只会用到第一个位置的值）
 
         # ------ 关闭时阻塞事件 ------
@@ -57,8 +55,8 @@ class BackgroundAgentModule:
         self._local_bus.subscribe(NotingStart,self.noting_start)
         self._local_bus.subscribe(NotingStop,self.noting_stop)
         self._local_bus.subscribe(TaskMessage,self.response_task_message)
-        self._local_bus.subscribe(ReporterResult,self.response_report_result)   # 接收转述模块的回信
-
+        # self._local_bus.subscribe(ReporterResult,self.response_report_result)   # 接收转述模块的回信
+        self._local_bus.subscribe_as_reply(ReporterResult)
         # ------ 订阅总线事件 ------
         core_bus_router.subscribe(AppStart,self._local_loop)
         core_bus_router.subscribe(AppClose,self._local_loop)
@@ -102,13 +100,6 @@ class BackgroundAgentModule:
         task = MessageTask(task_message= event.content)
         self._append_task(task)
 
-    def response_report_result(self,event:ReporterResult):
-        with self._lock:
-            box = self._reported_data.get(event.request_id)     # 拉取信箱对象
-            if box and not box["flag"].is_set():    # 如果信箱已经被清理掉了（比如被超时中断）或者已经回过信了（怎么可能？）就不管这个回复
-                box["data"] = event.data    # 保存回信数据
-                box["flag"].set()           # set旗帜，唤醒等待处的线程
-
     def _task_init(self, task):
         """每次调用agent前使用,用来处理不同agent任务可能拥有的不同初始化逻辑
         - 比如拼装提示词什么的（
@@ -127,27 +118,22 @@ class BackgroundAgentModule:
             # ------  拉取数据开始拼装提示词  ------
             # 初始化信箱参数
             message_id = uuid.uuid4().hex
-            message_flag = threading.Event()
-            box = {"flag": message_flag, "data": None}  #转述模块的回信数据会保存在这里的data字段中，flag字段用于标识数据传回状态（已到达/未到达）
-            with self._lock:
-                self._reported_data[message_id] = box
-            #发出请求
-            self._core_loop.post(RequestReporterData(message_id))
+
+            # 发出拉取请求
+            self._local_loop.post_request(RequestReporterData(message_id),aim_loop=self._core_loop)
             logger.debug(f"已发出转述文本拉取请求,task_id:{id(task)}")
 
-            #等待回信与重试（如果拉取出现超时，我觉得不应该让agent跑一个空提示词的任务，且极大概率会丢失一次转述，这一点对做笔记这种工作来说还挺致命的。但是又不能一直让这地方等待，因为如果在笔记模式结束的时候代码运行到这里又不反复检查noting的值的话可能后续其他类型的任务都会被卡住，所以设置15次重试。）
-            for times in range(15): #最多重试等待15次
-                if message_flag.wait(timeout=30):   # TODO如果后面发现总是超时可以改一改这个timeout
-                    break
-                if times < 14: logger.debug(f"本轮等待失败，正在重试（{times+1}/14）")
-            # 没等到则会直接报错跳过后续逻辑
-            else:
-                if self._noting:    # 如果已经不再noting了就可以不用报错了，属于正常退出。
-                    raise TimeoutError(f"数据拉取异常超时，笔记循环将被强行终止，请检查代码逻辑。task_id:{id(task)}")
+            # 等待回信（如果拉取出现超时，我觉得不应该让agent跑一个空提示词的任务，且极大概率会丢失一次转述，这一点对做笔记这种工作来说还挺致命的。所以直接报错。）
+            try:
+                data = self._local_loop.wait_reply(message_id,timeout=30,retry=15)  #每次30秒超时，最多重试15次
+            except TimeoutError as e:
+                raise TimeoutError(f"数据拉取异常超时，笔记循环将被强行终止，请检查代码逻辑。task_id:{id(task)}") from e
+            except LoopStopped as e:
+                raise e
             logger.debug(f"成功拉取数据,task_id:{id(task)}")
 
             # 把转述数据装进task
-            new_report = box["data"]
+            new_report = data
             if new_report is None or new_report == "":
                 logger.warning(f"本轮转述数据为空！,task_id:{id(task)}")
             logger.debug(f"本轮转述数据<task_id:{id(task)}>：\n{new_report}")
@@ -180,9 +166,6 @@ class BackgroundAgentModule:
             """
             task.task_prompt = task.task_prompt + wiki_rule + "现在请等待用户发送“本轮新增知识点”和“课堂原文”，随后开始工作"
 
-            # 清理信箱
-            with self._lock:
-                self._reported_data.pop(message_id, None) # None为设定的默认返回值，以防pop()在找不到key时抛出异常
             # 产生下一次笔记任务
             if self._noting:    # 如果还处于笔记模式则继续维持笔记循环
                 self._append_task_before_second(NotingTask(), 30, self._notting_singleton_lock) # 新建对象是因为这里原本的task已带有init信息了（本行代码必须位于等待逻辑之后，因为等待失败的时候要强行中断笔记循环，所以得确认笔记能正常继续再生成新的任务）
@@ -217,18 +200,20 @@ class BackgroundAgentModule:
                 self._task_init(task)
                 self._agent.invoke(task)
                 self._core_loop.post(WikiEditFinish())  # 通知wiki层可以更新了
-            except TypeError as e:
-                logger.warning(f"任务管理器执行时出现无法识别的任务：{e} \n已跳过本轮任务。请尽快自查代码逻辑")
-            except TimeoutError as e:
+            except TimeoutError as e: #超时时程序停止笔记循环
                 logger.warning(e)
                 # 停止笔记循环
                 self.noting_stop()
-                # 清理信箱
-                with self._lock:
-                    self._reported_data.clear()
+                # 主循环继续跑
+            except LoopStopped as e:
+                logger.warning(e)
+                # 就不break了，让下一轮自然的拿到STOP事件break
+            except TypeError as e:
+                logger.warning(f"任务管理器执行时出现无法识别的任务：{e} \n已跳过本轮任务。请尽快自查代码逻辑")
             except Exception as e:
                 logger.error(f"任务管理器执行时出现意外错误：{e} \n请尽快自查代码逻辑")
                 raise e # 日志记完了，抛出异常
+
         # loop结束后升起结束旗帜
         logger.info("后台任务Loop已结束")
         self._loop_finish_event.set()
