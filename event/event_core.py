@@ -7,7 +7,8 @@ from collections import defaultdict
 from typing import Any, Callable
 from loguru import logger
 
-
+class LoopStopped(Exception):
+    pass
 
 class Event:
     pass
@@ -93,21 +94,20 @@ class Loop:
         """向Loop中投递一个普通事件"""
         self._queue.put(event)
 
-    def post_request(self,event:RequestEvent,aim_loop:"Loop|None"=None):
+    def post_request(self,event:RequestEvent,aim_loop:"Loop"):
         """向Loop中投递一个请求事件
         # 请求-响应 机制
         # loop向总线询问每一个事件是被订阅为了‘回复’事件，如果是，则不发布而是在当前loop中完成数据接收等待需要的人来wait。
         """
         with self._lock:
-            self._mailbox[event.request_id] = {"flag":threading.Event(),"data":dict}
-        if aim_loop is None:
-            aim_loop = self
+            self._mailbox[event.request_id] = {"flag":threading.Event(),"data":None}
         aim_loop.post(event)
         logger.debug(f"【Bus:{id(self.bus)}|Loop:{id(self)}】成功投递了一个请求事件，request_id:{event.request_id}")
 
     def wait_reply(self,request_id:str,timeout:int=10,retry:int=14):
-        """等待回复，然后return事件的data字典"""
-
+        """等待回复，然后return事件的data字典
+        超时会报错
+        """
         # 检查当前线程是不是运行再了某个事件Loop中，防止阻塞
         if getattr(_LOOP_RUN_CONTEXT, "active", False):
             raise RuntimeError(
@@ -131,7 +131,7 @@ class Loop:
         with self._lock:
             self._mailbox.pop(request_id, None) #清理
             if mail.get("error"):
-                raise RuntimeError(mail["error"])
+                raise LoopStopped(mail["error"])
             return mail.get("data")
 
     def reply_response(self,event:ReplyEvent):
@@ -161,9 +161,11 @@ class Loop:
                 if event is self.STOP:
                     # 进入程序的停止逻辑
                     # 告知所有等待回信的线程不需要再等待了
-                    for mail in self._mailbox.values():
-                        mail["error"] = "Loop 已停止"
-                        mail["flag"].set()
+                    with self._lock:
+                        for mail in self._mailbox.values():
+                            mail["error"] = "Loop 已停止"
+                            mail["flag"].set()
+                        self._mailbox.clear()
                     # 等待必须完成的代码逻辑结束
                     for flag in self._wait_before_stop:  # 等待必等项
                         if flag.wait(timeout=5):
@@ -179,7 +181,7 @@ class Loop:
                 else:
                     self.bus.publish(event)  # 触发注册的回调
         finally:
-            _LOOP_RUN_CONTEXT.active = True  # Loop线程标记
+            _LOOP_RUN_CONTEXT.active = False  # Loop线程标记
 
 class Router:
     """
