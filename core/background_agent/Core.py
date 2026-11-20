@@ -163,7 +163,7 @@ class BackgroundAgentModule:
             wiki_rule = f"""\n
             ##wiki语法介绍：
             {get_wiki_rule()}\n\n
-            """
+            """ #TODO这个地方居然每次拼装提示词都要读一遍文件，太浪费时间了，得尽快把init方法方面的东西转移到定义类的同时，把语法规则改成保存在内存中
             task.task_prompt = task.task_prompt + wiki_rule + "现在请等待用户发送“本轮新增知识点”和“课堂原文”，随后开始工作"
 
             # 产生下一次笔记任务

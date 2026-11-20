@@ -1,4 +1,4 @@
-
+import threading
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import StateGraph, START
 from langgraph.graph.message import add_messages
@@ -6,24 +6,39 @@ from typing_extensions import TypedDict, Annotated
 from loguru import logger
 from datetime import date
 
-from core.background_agent.graphs_manager import GraphBlockManager, GraphTaskManager
 from core.tools.ToolsManager import ToolsManager
+from core.subagent.SubTask import SubTask
+from core.wiki.read_wiki_rules import get_wiki_rule
 from settings.routers.provider import ProviderRouter
 
 # 定义Agent的消息state    (以类型注解的形式)
 class MessageState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
-    now_task: str
-    agent_prompt: str
+    task: SubTask
     llm_calls: int
 
 class SubAgents:
     """提供subagent实例"""
-    def __init__(self, provider_router: ProviderRouter, tools_manager: ToolsManager, graph_block_manager:GraphBlockManager, graph_task_manager:GraphTaskManager):
+    def __init__(self, provider_router: ProviderRouter, tools_manager: ToolsManager, ):
         self._provider_router = provider_router
         self._tools_manager = tools_manager
 
-        self._default_tools = "default"
+        self._tool_sets = ["default","wiki_tool_set"]
+        self._agent = self.compile()    #实例
+        self._wiki_rules = get_wiki_rule()
+        self._system_prompt:str ="""
+你是一个wiki笔记自动管理系统中负责完成页面编辑的agent。
+请根据你接收到的“本次任务描述”来完成对应的笔记修改任务。“附加信息”中会提供本次任务可能用到的知识点描述或其他提示。
+"""
+        self._page_lock: dict[str, threading.Lock] = {} #TODO: 页面锁，用于保护同一个文件在一次从‘读’到‘写’的全过程中文件不被其他subagent修改。
+
+    # ------ 向外暴露的方法 ------
+
+    def invoke(self,task:SubTask):
+        result_state = self._agent.invoke({"messages": [],"task":task,"llm_calls": 0})
+        return result_state["messages"][-1].content
+
+    # ------ Agent结构定义 ------
 
     # agent节点
     def _agent_node(self,state: dict):
@@ -31,20 +46,24 @@ class SubAgents:
         agent “观察-执行”循环节点————观察节点
         """
         now_date = f"今日日期为：{date.today().isoformat()}\n"
-
         model  = self._provider_router.model_route()
 
         # 提示词获取与构建
-        system_prompt = ""
-        human_msg = ""
+        task = state["task"]
+        system_msg = f"{self._system_prompt}\n" + f"wiki页面语法规则:\n{self._wiki_rules}\n"
+        human_msg = f"""
+本次任务描述：
+{task.task_describe}
+本次任务附加信息：
+{task.attachment_content}
+"""
         # 工具列表获取
-
-        _tools =  self._tools_manager.get_tool_set_by_list([self._default_tools,])
+        _tools =  self._tools_manager.get_tool_set_by_list(self._tool_sets)
         # 工具嵌入
         _model_with_tools = model.bind_tools(_tools)
 
         last_messages = state["messages"]
-        last_messages = [SystemMessage(content=system_prompt),HumanMessage(content=human_msg)] + last_messages  # TODO记得修改为ChatMessage版本查看效果
+        last_messages = [SystemMessage(content=system_msg),HumanMessage(content=human_msg)] + last_messages  # TODO记得修改为ChatMessage版本查看效果
 
         result = _model_with_tools.invoke(last_messages)
         logger.debug(f"subagent工作输出:{result.content}")

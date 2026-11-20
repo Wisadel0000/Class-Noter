@@ -70,3 +70,14 @@ class WikiEditFinish(Event):    #提示wiki这时候应该尝试落盘了
 @dataclass
 class WikiUpdate(Event):    #wiki发生了一次更新，此事件提示Gui应刷新页面了
     pass
+
+@dataclass
+class CreateSubAgentTask(RequestEvent):
+    request_id: str
+    task_describe: str
+    attachment_content: str
+
+@dataclass
+class SubAgentResult(ReplyEvent):
+    request_id: str
+    data: dict

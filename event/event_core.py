@@ -4,7 +4,7 @@ import queue
 import threading
 import traceback
 from collections import defaultdict
-from typing import Any, Callable
+from typing import Any, Callable, overload
 from loguru import logger
 
 class LoopStopped(Exception):
@@ -94,7 +94,7 @@ class Loop:
         """向Loop中投递一个普通事件"""
         self._queue.put(event)
 
-    def post_request(self,event:RequestEvent,aim_loop:"Loop"):
+    def post_request(self,event:RequestEvent, aim_loop:"Loop"):
         """向Loop中投递一个请求事件
         # 请求-响应 机制
         # loop向总线询问每一个事件是被订阅为了‘回复’事件，如果是，则不发布而是在当前loop中完成数据接收等待需要的人来wait。
@@ -134,7 +134,7 @@ class Loop:
                 raise LoopStopped(mail["error"])
             return mail.get("data")
 
-    def reply_response(self,event:ReplyEvent):
+    def _reply_response(self,event:ReplyEvent):
         """把接受到的回复装进对应的请求信箱"""
         logger.debug(f"【Bus:{id(self.bus)}|Loop:{id(self)}】响应了回复事件，request_id{event.request_id}")
         with self._lock:
@@ -177,7 +177,7 @@ class Loop:
                     break
 
                 if self.bus.is_reply_event(event):
-                    self.reply_response(event)  # 处理‘回复’
+                    self._reply_response(event)  # 处理‘回复’
                 else:
                     self.bus.publish(event)  # 触发注册的回调
         finally:
